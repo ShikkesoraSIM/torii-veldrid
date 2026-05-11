@@ -230,12 +230,22 @@ namespace Veldrid.D3D12
 
                 string shaderInputDump = reflectVertexShaderInputs(psoDesc.VertexShader);
                 string layoutDump = dumpInputLayout(psoDesc.InputLayout);
+                string vsBindingsDump = reflectShaderBindings(psoDesc.VertexShader, "VS");
+                string psBindingsDump = reflectShaderBindings(psoDesc.PixelShader, "PS");
+                string blendDump = dumpBlendState(psoDesc.BlendState, psoDesc.RenderTargetFormats?.Length ?? 0);
+                string rasterDump = dumpRasterizerState(psoDesc.RasterizerState);
+                string rootSigDump = dumpRootSignatureLayout(description);
 
                 throw new VeldridException(
                     $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\n"
                     + $"PSO summary: {summary}\n"
                     + $"VS reflected inputs:\n{shaderInputDump}"
                     + $"Our InputLayout:\n{layoutDump}"
+                    + $"VS reflected bindings:\n{vsBindingsDump}"
+                    + $"PS reflected bindings:\n{psBindingsDump}"
+                    + $"Our root signature (from Veldrid ResourceLayouts):\n{rootSigDump}"
+                    + $"Blend state:\n{blendDump}"
+                    + $"Rasterizer state:\n{rasterDump}"
                     + $"InfoQueue (polled):\n{iqDump}"
                     + $"DebugMessages (callback):\n{callbackDump}",
                     ex);
@@ -287,6 +297,82 @@ namespace Veldrid.D3D12
             {
                 return $"  (reflection threw: {ex.GetType().Name}: {ex.Message})\n";
             }
+        }
+
+        private static string reflectShaderBindings(ReadOnlyMemory<byte> bytecode, string stageLabel)
+        {
+            if (bytecode.IsEmpty)
+                return $"  ({stageLabel}: no bytecode)\n";
+
+            try
+            {
+                using var reflection = Compiler.Reflect<ID3D11ShaderReflection>(bytecode.Span);
+                if (reflection == null)
+                    return $"  ({stageLabel}: reflect returned null)\n";
+
+                int boundCount = reflection.Description.BoundResources;
+                if (boundCount == 0)
+                    return $"  ({stageLabel}: no bound resources)\n";
+
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < boundCount; i++)
+                {
+                    var b = reflection.GetResourceBindingDescription(i);
+                    sb.Append($"  [{i}] {b.Type} '{b.Name}' bindPoint={b.BindPoint} bindCount={b.BindCount}\n");
+                }
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                return $"  ({stageLabel} reflect threw: {ex.GetType().Name}: {ex.Message})\n";
+            }
+        }
+
+        private static string dumpBlendState(BlendDescription b, int rtCount)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"  AlphaToCoverage={b.AlphaToCoverageEnable} IndependentBlend={b.IndependentBlendEnable} (rtCount={rtCount})\n");
+            for (int i = 0; i < (rtCount > 0 ? rtCount : 1) && i < 8; i++)
+            {
+                var rt = b.RenderTarget[i];
+                sb.Append($"  RT[{i}]: BlendEnable={rt.BlendEnable} LogicOpEnable={rt.LogicOpEnable} ")
+                  .Append($"src={rt.SourceBlend} dst={rt.DestinationBlend} op={rt.BlendOperation} ")
+                  .Append($"srcA={rt.SourceBlendAlpha} dstA={rt.DestinationBlendAlpha} opA={rt.BlendOperationAlpha} ")
+                  .Append($"writeMask={rt.RenderTargetWriteMask}\n");
+            }
+            return sb.ToString();
+        }
+
+        private static string dumpRasterizerState(RasterizerDescription r)
+        {
+            return $"  FillMode={r.FillMode} CullMode={r.CullMode} FrontCCW={r.FrontCounterClockwise} "
+                + $"DepthBias={r.DepthBias} DepthBiasClamp={r.DepthBiasClamp:F3} SlopeScaledBias={r.SlopeScaledDepthBias:F3} "
+                + $"DepthClip={r.DepthClipEnable} MultisampleEnable={r.MultisampleEnable} "
+                + $"AntialiasedLine={r.AntialiasedLineEnable} ForcedSampleCount={r.ForcedSampleCount}\n";
+        }
+
+        private static string dumpRootSignatureLayout(GraphicsPipelineDescription d)
+        {
+            var layouts = d.ResourceLayouts;
+            if (layouts == null || layouts.Length == 0)
+                return "  (no ResourceLayouts in pipeline description)\n";
+
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < layouts.Length; i++)
+            {
+                if (layouts[i] is not D3D12ResourceLayout d12layout)
+                {
+                    sb.Append($"  [{i}] (non-D3D12 layout?? {layouts[i]?.GetType().Name})\n");
+                    continue;
+                }
+                sb.Append($"  ResourceLayout[{i}] (space={i}): {d12layout.Elements.Length} elements, CBV/SRV/UAV={d12layout.CbvSrvUavCount} Sampler={d12layout.SamplerCount}\n");
+                for (int j = 0; j < d12layout.Elements.Length; j++)
+                {
+                    var el = d12layout.Elements[j];
+                    sb.Append($"    [{j}] kind={el.Kind} stages={el.Stages} name='{el.Name}'\n");
+                }
+            }
+            return sb.ToString();
         }
 
         private static string dumpInputLayout(InputLayoutDescription? layoutMaybe)
