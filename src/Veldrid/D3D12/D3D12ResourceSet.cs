@@ -105,11 +105,39 @@ namespace Veldrid.D3D12
 
         private static void writeCbv(D3D12GraphicsDevice gd, IBindableResource resource, int descriptorIndex)
         {
-            var buf = (D3D12Buffer)resource;
+            // The bound resource for a CBV slot is either a whole
+            // DeviceBuffer (Veldrid's CB binding without offset) or a
+            // DeviceBufferRange (a sub-range with explicit
+            // offset+size — what osu-framework's deferred renderer
+            // hands us because it sub-allocates many CBs out of one
+            // large persistent buffer per frame).
+            ulong gpuAddr;
+            int sizeInBytes;
+            switch (resource)
+            {
+                case D3D12Buffer wholeBuffer:
+                    gpuAddr = wholeBuffer.NativeResource.GPUVirtualAddress;
+                    sizeInBytes = (int)wholeBuffer.PaddedSizeInBytes;
+                    break;
+
+                case DeviceBufferRange range:
+                    var rangeBuf = Util.AssertSubtype<DeviceBuffer, D3D12Buffer>(range.Buffer);
+                    gpuAddr = rangeBuf.NativeResource.GPUVirtualAddress + range.Offset;
+                    // CBV size must be a multiple of 256 (D3D12
+                    // constant-buffer alignment requirement); round up.
+                    sizeInBytes = (int)((range.SizeInBytes + 255u) & ~255u);
+                    break;
+
+                default:
+                    throw new VeldridException(
+                        $"D3D12 writeCbv: unsupported CBV resource type {resource.GetType().Name}. "
+                        + "Expected D3D12Buffer or DeviceBufferRange.");
+            }
+
             var desc = new ConstantBufferViewDescription
             {
-                BufferLocation = buf.NativeResource.GPUVirtualAddress,
-                SizeInBytes = (int)buf.PaddedSizeInBytes,
+                BufferLocation = gpuAddr,
+                SizeInBytes = sizeInBytes,
             };
             gd.Device.CreateConstantBufferView(desc, gd.CbvSrvUavAllocator.GetCpuHandle(descriptorIndex));
         }
