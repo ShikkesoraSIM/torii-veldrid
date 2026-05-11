@@ -20,6 +20,16 @@
     <PackageReference Include="ppy.Vk" Version="1.0.26" Condition="'$(ExcludeVulkan)' != 'true'"/>
     <PackageReference Include="Vortice.D3DCompiler" Version="$(VorticeWindowsVersion)"/>
     <PackageReference Include="Vortice.Direct3D11" Version="$(VorticeWindowsVersion)"/>
+    <!--
+      Torii Veldrid extension: Vortice.Direct3D12 provides the low-level
+      managed bindings for D3D12 (queues, descriptor heaps, root signatures,
+      command lists, pipeline state objects). The Veldrid-side abstraction
+      layer that translates Veldrid concepts to these bindings lives under
+      Veldrid/D3D12/. Version-pinned to VorticeWindowsVersion (2.4.2) so
+      all three Vortice packages stay on the same ABI family — Vortice's
+      2.x/3.x split has minor breaking changes between them.
+    -->
+    <PackageReference Include="Vortice.Direct3D12" Version="$(VorticeWindowsVersion)"/>
   </ItemGroup>
 
   <ItemGroup>
