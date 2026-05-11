@@ -38,7 +38,7 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: framebuffer pending.");
 
         public override CommandList CreateCommandList(ref CommandListDescription description)
-            => throw new NotImplementedException("D3D12: command list pending.");
+            => new D3D12CommandList(gd, ref description);
 
         public override ResourceLayout CreateResourceLayout(ref ResourceLayoutDescription description)
             => throw new NotImplementedException("D3D12: resource layout pending.");
@@ -47,7 +47,7 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: resource set pending.");
 
         public override Fence CreateFence(bool signaled)
-            => throw new NotImplementedException("D3D12: fence pending.");
+            => new D3D12Fence(gd.Device, signaled);
 
         public override Swapchain CreateSwapchain(ref SwapchainDescription description)
             => throw new NotImplementedException("D3D12: swapchain pending.");

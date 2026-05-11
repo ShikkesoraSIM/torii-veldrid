@@ -72,8 +72,18 @@ namespace Veldrid.D3D12
         public IDXGIAdapter Adapter => dxgiAdapter;
         public bool IsDebugEnabled { get; }
 
+        /// <summary>
+        /// Direct command queue — handles graphics + compute + copy work. A
+        /// production-grade backend would have separate Compute and Copy
+        /// queues to overlap workloads, but session 2 keeps everything on
+        /// one queue for simplicity. Splitting comes in a later optimisation
+        /// pass once we have real rendering working.
+        /// </summary>
+        public ID3D12CommandQueue DirectQueue => directQueue;
+
         private readonly ID3D12Device device;
         private readonly IDXGIAdapter dxgiAdapter;
+        private readonly ID3D12CommandQueue directQueue;
         private readonly D3D12ResourceFactory d3d12ResourceFactory;
 
         public D3D12GraphicsDevice(GraphicsDeviceOptions options, SwapchainDescription? swapchainDesc)
@@ -162,6 +172,15 @@ namespace Veldrid.D3D12
                 bufferRangeBinding: true,
                 shaderFloat64: false);
 
+            // Direct command queue — accepts graphics, compute, and copy work.
+            // Priority Normal; no GPU node mask (single-adapter). See the
+            // DirectQueue XML doc for the rationale around using one queue.
+            directQueue = device.CreateCommandQueue(new CommandQueueDescription(
+                CommandListType.Direct,
+                CommandQueuePriority.Normal,
+                CommandQueueFlags.None,
+                nodeMask: 0));
+
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
 
             PostDeviceCreated();
@@ -188,13 +207,64 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: GetSampleCountLimit pending.");
 
         public override bool WaitForFence(Fence fence, ulong nanosecondTimeout)
-            => throw new NotImplementedException("D3D12: fence sync pending.");
+        {
+            return Util.AssertSubtype<Fence, D3D12Fence>(fence).Wait(nanosecondTimeout);
+        }
 
         public override bool WaitForFences(Fence[] fences, bool waitAll, ulong nanosecondTimeout)
-            => throw new NotImplementedException("D3D12: fence sync pending.");
+        {
+            // Simple serial implementation — wait each in order. For waitAll
+            // this is exactly correct: all must signal regardless of order,
+            // and the total time is bounded by the slowest.
+            //
+            // For waitAll=false (wait-any) this is suboptimal — we'd want
+            // a single multi-handle WaitForMultipleObjects. Leaving that
+            // optimisation for session 6; rendering pipelines mostly use
+            // waitAll for frame-pacing so the common case is correct.
+            //
+            // Time budget is split crudely: each fence gets the full
+            // remaining timeout. With unsignaled fences in waitAll mode
+            // the practical effect is the same as native MultipleObjects
+            // because they all have to signal eventually.
+            if (waitAll)
+            {
+                foreach (var f in fences)
+                {
+                    if (!Util.AssertSubtype<Fence, D3D12Fence>(f).Wait(nanosecondTimeout))
+                        return false;
+                }
+                return true;
+            }
+
+            // waitAny: poll each in turn with zero timeout until one signals
+            // or the budget is exhausted. Coarse-grained but functional.
+            long start = Environment.TickCount64;
+            int budgetMs = nanosecondTimeout == ulong.MaxValue
+                ? int.MaxValue
+                : (int)Math.Min(int.MaxValue, nanosecondTimeout / 1_000_000UL);
+
+            while (true)
+            {
+                foreach (var f in fences)
+                {
+                    if (Util.AssertSubtype<Fence, D3D12Fence>(f).Signaled)
+                        return true;
+                }
+
+                if (budgetMs == 0) return false;
+                int elapsed = (int)(Environment.TickCount64 - start);
+                if (elapsed >= budgetMs) return false;
+
+                // Yield briefly to avoid pegging a core spinning on
+                // CompletedValue. 1ms granularity is fine for fence-wait.
+                System.Threading.Thread.Sleep(1);
+            }
+        }
 
         public override void ResetFence(Fence fence)
-            => throw new NotImplementedException("D3D12: fence sync pending.");
+        {
+            Util.AssertSubtype<Fence, D3D12Fence>(fence).Reset();
+        }
 
         protected override MappedResource MapCore(IMappableResource resource, MapMode mode, uint subresource)
             => throw new NotImplementedException("D3D12: resource mapping pending.");
@@ -204,20 +274,65 @@ namespace Veldrid.D3D12
 
         protected override void PlatformDispose()
         {
-            // Order matters: release adapter LAST so DXGI can still observe
-            // the device handle while it's being torn down.
+            // Order matters: drain the queue first so the GPU isn't mid-flight
+            // when we tear down the device, then release in reverse-creation
+            // order. Adapter LAST so DXGI can still observe the device handle
+            // while it's being torn down.
+            try
+            {
+                WaitForIdleCore();
+            }
+            catch
+            {
+                // Best-effort — if WaitForIdle throws during dispose we still
+                // want to release everything below.
+            }
+
+            directQueue?.Dispose();
             dxgiAdapter?.Dispose();
             device?.Dispose();
         }
 
         private protected override void SubmitCommandsCore(CommandList commandList, Fence fence)
-            => throw new NotImplementedException("D3D12: command submission pending.");
+        {
+            var d3d12List = Util.AssertSubtype<CommandList, D3D12CommandList>(commandList);
+
+            // Submit the closed command list to the GPU. ExecuteCommandLists
+            // takes an array because you can batch — for now we always submit
+            // one at a time; batching is a future micro-optimisation.
+            directQueue.ExecuteCommandLists(new[] { (ID3D12CommandList)d3d12List.NativeList });
+
+            // If the caller passed a fence, signal it after the GPU completes
+            // the work above. D3D12 enqueues the Signal on the queue so it
+            // happens IN ORDER with the executed lists — no race.
+            if (fence != null)
+            {
+                var d3d12Fence = Util.AssertSubtype<Fence, D3D12Fence>(fence);
+                ulong signalValue = d3d12Fence.AllocateNextSignalValue();
+                directQueue.Signal(d3d12Fence.Fence, signalValue).CheckError();
+            }
+        }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)
-            => throw new NotImplementedException("D3D12: swapchain present pending.");
+            => throw new NotImplementedException("D3D12: swapchain present pending (session 5).");
 
         private protected override void WaitForIdleCore()
-            => throw new NotImplementedException("D3D12: queue wait-idle pending.");
+        {
+            // Idiomatic D3D12 wait-for-idle: signal a transient fence on the
+            // queue, then wait for it to complete on the CPU. Equivalent to
+            // D3D11's Flush() + GetData(QUERY_EVENT) loop.
+            using var transientFence = device.CreateFence(0, FenceFlags.None);
+            const ulong target = 1;
+
+            directQueue.Signal(transientFence, target).CheckError();
+
+            if (transientFence.CompletedValue < target)
+            {
+                using var evt = new System.Threading.ManualResetEvent(false);
+                transientFence.SetEventOnCompletion(target, evt.SafeWaitHandle.DangerousGetHandle()).CheckError();
+                evt.WaitOne();
+            }
+        }
 
         private protected override void WaitForNextFrameReadyCore()
             => throw new NotImplementedException("D3D12: frame pacing pending.");
