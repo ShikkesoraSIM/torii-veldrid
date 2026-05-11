@@ -63,5 +63,60 @@ namespace Veldrid.D3D12
                 _ => ResourceStates.Common,                          // DEFAULT can start in Common
             };
         }
+
+        /// <summary>
+        /// Emit a state transition for <paramref name="texture"/> into
+        /// <paramref name="newState"/> on the given command list, IF the
+        /// texture isn't already in that state. No-op if states match.
+        /// </summary>
+        /// <remarks>
+        /// Updates the texture's <see cref="D3D12Texture.CurrentState"/>
+        /// in lockstep with the recorded barrier. The barrier is queued
+        /// into the command list — it doesn't execute until the command
+        /// list is submitted, so a sequence of transitions on the same
+        /// resource records as multiple barriers. A batched-transition
+        /// optimisation (collect pending transitions, flush before draw)
+        /// is a future improvement; this naive approach is correct.
+        /// </remarks>
+        public static void TransitionTexture(
+            ID3D12GraphicsCommandList commandList,
+            D3D12Texture texture,
+            ResourceStates newState)
+        {
+            if (texture.CurrentState == newState) return;
+
+            commandList.ResourceBarrierTransition(
+                texture.NativeResource,
+                texture.CurrentState,
+                newState);
+            texture.CurrentState = newState;
+        }
+
+        /// <summary>
+        /// Emit a state transition for <paramref name="buffer"/> into
+        /// <paramref name="newState"/> on the given command list, IF the
+        /// buffer isn't already in that state. No-op if states match.
+        /// </summary>
+        /// <remarks>
+        /// UPLOAD-heap buffers can NEVER transition out of GenericRead
+        /// (D3D12 spec) — silently skip such requests. READBACK-heap
+        /// buffers are similarly pinned to CopyDest.
+        /// </remarks>
+        public static void TransitionBuffer(
+            ID3D12GraphicsCommandList commandList,
+            D3D12Buffer buffer,
+            ResourceStates newState)
+        {
+            if (buffer.HeapType == HeapType.Upload || buffer.HeapType == HeapType.Readback)
+                return;
+
+            if (buffer.CurrentState == newState) return;
+
+            commandList.ResourceBarrierTransition(
+                buffer.NativeResource,
+                buffer.CurrentState,
+                newState);
+            buffer.CurrentState = newState;
+        }
     }
 }

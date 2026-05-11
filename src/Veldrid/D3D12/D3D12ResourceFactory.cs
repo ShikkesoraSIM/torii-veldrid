@@ -41,10 +41,10 @@ namespace Veldrid.D3D12
             => new D3D12CommandList(gd, ref description);
 
         public override ResourceLayout CreateResourceLayout(ref ResourceLayoutDescription description)
-            => throw new NotImplementedException("D3D12: resource layout pending.");
+            => new D3D12ResourceLayout(ref description);
 
         public override ResourceSet CreateResourceSet(ref ResourceSetDescription description)
-            => throw new NotImplementedException("D3D12: resource set pending.");
+            => new D3D12ResourceSet(gd, ref description);
 
         public override Fence CreateFence(bool signaled)
             => new D3D12Fence(gd.Device, signaled);
@@ -53,7 +53,7 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: swapchain pending.");
 
         protected override Pipeline CreateGraphicsPipelineCore(ref GraphicsPipelineDescription description)
-            => throw new NotImplementedException("D3D12: graphics pipeline pending.");
+            => new D3D12Pipeline(gd, ref description);
 
         protected override Texture CreateTextureCore(ulong nativeTexture, ref TextureDescription description)
             => throw new NotImplementedException("D3D12: native-texture import pending (S5 — needed for swapchain back-buffer wrap).");
