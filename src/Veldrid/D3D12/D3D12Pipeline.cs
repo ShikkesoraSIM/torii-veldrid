@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using Vortice.Direct3D;
 using Vortice.Direct3D12;
+using Vortice.Direct3D12.Debug;
 using Vortice.DXGI;
 using VorticeBlend = Vortice.Direct3D12.Blend;
 using VorticeBlendOperation = Vortice.Direct3D12.BlendOperation;
@@ -184,11 +185,76 @@ namespace Veldrid.D3D12
                 Flags = PipelineStateFlags.None,
             };
 
-            pso = gd.Device.CreateGraphicsPipelineState(psoDesc);
+            try
+            {
+                pso = gd.Device.CreateGraphicsPipelineState(psoDesc);
+            }
+            catch (SharpGen.Runtime.SharpGenException ex)
+            {
+                // Without the Windows SDK Graphics Tools optional feature
+                // installed, EnableDebugLayer() silently no-ops and PSO
+                // failures arrive as opaque E_FAIL / E_INVALIDARG. Pull
+                // the device's InfoQueue (created unconditionally — the
+                // queue interface exists even when the debug layer isn't
+                // emitting), drain whatever's there, and rethrow with the
+                // raw D3D12 validator messages attached. Diagnoses 90% of
+                // PSO mismatches without needing the SDK layers DLL.
+                var msgs = drainInfoQueue(gd);
+                if (msgs.Length > 0)
+                {
+                    throw new VeldridException(
+                        $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}). InfoQueue dump:\n{msgs}",
+                        ex);
+                }
+                // If InfoQueue is also empty (no debug layer at all),
+                // dump the description summary so callers at least see
+                // what we tried to build.
+                throw new VeldridException(
+                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}). "
+                    + $"PSO summary: VS={psoDesc.VertexShader.Length}B PS={psoDesc.PixelShader.Length}B "
+                    + $"RTs={psoDesc.RenderTargetFormats?.Length ?? 0} "
+                    + $"firstRT={(psoDesc.RenderTargetFormats?.Length > 0 ? psoDesc.RenderTargetFormats[0].ToString() : "n/a")} "
+                    + $"DSV={psoDesc.DepthStencilFormat} "
+                    + $"InputElements={psoDesc.InputLayout?.Elements?.Length ?? 0} "
+                    + $"Topology={psoDesc.PrimitiveTopologyType} "
+                    + $"Samples={psoDesc.SampleDescription.Count}",
+                    ex);
+            }
 
             // rangeArraysToKeepAlive can fall off the stack now — the root
             // signature has been created and the driver has its own copy.
             GC.KeepAlive(rangeArraysToKeepAlive);
+        }
+
+        private static string drainInfoQueue(D3D12GraphicsDevice gd)
+        {
+            // ID3D12InfoQueue is queried off the device; succeeds even when
+            // the debug layer is dormant (it's a sibling COM interface).
+            // GetMessage returns the validator's actual diagnostic text.
+            try
+            {
+                if (gd.Device.QueryInterfaceOrNull<ID3D12InfoQueue>() is not ID3D12InfoQueue iq)
+                    return string.Empty;
+
+                using (iq)
+                {
+                    ulong count = iq.NumStoredMessages;
+                    if (count == 0) return string.Empty;
+
+                    var sb = new System.Text.StringBuilder();
+                    for (ulong i = 0; i < count && i < 50; i++)
+                    {
+                        var msg = iq.GetMessage(i);
+                        sb.Append("  [").Append(msg.Severity).Append("] ").Append(msg.Description).Append('\n');
+                    }
+                    iq.ClearStoredMessages();
+                    return sb.ToString();
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         // ---- RootSignature helpers --------------------------------------
