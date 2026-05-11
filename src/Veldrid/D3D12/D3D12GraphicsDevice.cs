@@ -593,16 +593,39 @@ namespace Veldrid.D3D12
                 uploadDesc, ResourceStates.GenericRead, null);
 
             // Copy the source data into the upload buffer with the right
-            // row alignment. The caller's source data is tightly packed;
-            // we pad rows to the footprint's row pitch.
+            // row alignment. The caller's source data is tightly packed
+            // and sized for the SUB-RECT being uploaded (width × height ×
+            // depth × bpp), NOT for the full texture's dimensions.
+            //
+            // CRITICAL: rowSizesArr[0] from GetCopyableFootprints returns
+            // the row size for the FULL TEXTURE's width at this mip
+            // level — it does NOT shrink with our sub-rect's width. Using
+            // that value as srcRowPitch makes the source pointer advance
+            // past the end of the caller's buffer on any sub-rect upload
+            // and crashes with AccessViolationException. Derive the
+            // actual per-row source size from the caller's sizeInBytes
+            // (total source buffer length), divided by total rows
+            // (numRows × depth). That value matches the sub-rect's
+            // width × bpp for uncompressed formats and the sub-rect's
+            // block-row × blockSize for compressed.
             unsafe
             {
                 void* mappedPtr;
                 uploadResource.Map(0, null, &mappedPtr).CheckError();
                 byte* dst = (byte*)mappedPtr + footprint.Offset;
                 byte* src = (byte*)source;
-                int srcRowPitch = (int)rowSizeInBytes;
+
+                int totalRows = numRows * (int)depth;
+                int srcRowPitch = totalRows > 0 ? (int)(sizeInBytes / (uint)totalRows) : (int)rowSizeInBytes;
                 int dstRowPitch = (int)footprint.Footprint.RowPitch;
+
+                // Defensive clamp — if srcRowPitch somehow > dstRowPitch
+                // (would mean source is wider than D3D12's aligned
+                // destination row, which shouldn't happen but Buffer
+                // MemoryCopy's third arg is the destination buffer
+                // size — keeping that clamped avoids any overflow on
+                // the destination side too).
+                int copyPerRow = srcRowPitch < dstRowPitch ? srcRowPitch : dstRowPitch;
 
                 for (int slice = 0; slice < depth; slice++)
                 {
@@ -611,7 +634,7 @@ namespace Veldrid.D3D12
                         System.Buffer.MemoryCopy(
                             src + (slice * numRows + row) * srcRowPitch,
                             dst + (slice * dstRowPitch * numRows) + (row * dstRowPitch),
-                            dstRowPitch, srcRowPitch);
+                            dstRowPitch, copyPerRow);
                     }
                 }
                 uploadResource.Unmap(0);
