@@ -280,8 +280,13 @@ namespace Veldrid.D3D12
             CpuDescriptorHandle target = currentFramebuffer!.RtvHandle
                 + (int)(index * gd.RtvAllocator.DescriptorSize);
 
-            commandList.ClearRenderTargetView(target, new Color4(
-                clearColor.R, clearColor.G, clearColor.B, clearColor.A));
+            // TEMP DIAG: force RED clear for ALL color clears, so if we
+            // see red on screen we know Clear is reaching the display
+            // (= Present + RTV + swapchain wiring all work) and the
+            // 'black screen' is somewhere in the draw path. If we see
+            // black, the issue is upstream of Clear (wrong buffer,
+            // Present showing the wrong index, etc).
+            commandList.ClearRenderTargetView(target, new Color4(1.0f, 0.0f, 0.0f, 1.0f));
         }
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)
