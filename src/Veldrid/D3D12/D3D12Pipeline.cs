@@ -412,7 +412,16 @@ namespace Veldrid.D3D12
             var desc = new BlendDescription
             {
                 AlphaToCoverageEnable = veldridBlend.AlphaToCoverageEnabled,
-                IndependentBlendEnable = true,
+                // Setting IndependentBlendEnable = true forces D3D12 to
+                // validate EVERY one of the 8 RenderTarget blend slots
+                // against the pixel-shader output signature, including
+                // slots beyond the actual NumRenderTargets — Vortice
+                // marshals all 8 entries regardless. With osu-framework's
+                // single-RT pipelines that translates to "your slot-1..7
+                // blend state references an RT that isn't bound" →
+                // E_INVALIDARG. Flip it false so only slot 0 matters; we
+                // are not currently doing per-RT blending anyway.
+                IndependentBlendEnable = false,
             };
 
             for (int i = 0; i < 8; i++)
