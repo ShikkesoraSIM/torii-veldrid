@@ -245,6 +245,20 @@ namespace Veldrid.D3D12
             var currentBackBuffer = backBuffers[currentBackBufferIndex];
             if (currentBackBuffer.CurrentState != ResourceStates.Present)
             {
+                // D3D12 strictly forbids resetting a command allocator
+                // while command lists allocated from it are still
+                // in-flight on the GPU. Our WaitForNextFrameReadyCore
+                // is a no-op so the framework's frame-pacing hook
+                // doesn't enforce the wait — Present is responsible
+                // for it. WaitForIdle drains the queue, guaranteeing
+                // the previous frame's present cmd has completed
+                // before we recycle the allocator. Without this,
+                // Reset(allocator) is undefined behaviour and the
+                // driver eventually catches it as DXGI_ERROR_DEVICE_RESET
+                // ('badly formed command'). Cheap because by Present
+                // time the GPU is usually idle / near-idle anyway.
+                gd.WaitForIdle();
+
                 presentAllocator.Reset();
                 presentCommandList.Reset(presentAllocator, initialState: null);
 
