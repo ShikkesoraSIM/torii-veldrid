@@ -280,8 +280,11 @@ namespace Veldrid.D3D12
             CpuDescriptorHandle target = currentFramebuffer!.RtvHandle
                 + (int)(index * gd.RtvAllocator.DescriptorSize);
 
-            commandList.ClearRenderTargetView(target, new Color4(
-                clearColor.R, clearColor.G, clearColor.B, clearColor.A));
+            // TEMP DIAG: force RED clear again so we can distinguish
+            // "rasterizer drops everything" (= pure red screen) vs
+            // "shader writes black" (= black shapes against red bg).
+            // Combined with the blend-OFF probe in D3D12Pipeline.
+            commandList.ClearRenderTargetView(target, new Color4(1.0f, 0.0f, 0.0f, 1.0f));
         }
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)
