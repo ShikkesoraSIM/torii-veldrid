@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using Vortice.D3DCompiler;
 using Vortice.Direct3D;
+using Vortice.Direct3D11.Shader;
 using Vortice.Direct3D12;
 using Vortice.Direct3D12.Debug;
 using Vortice.DXGI;
@@ -212,8 +214,9 @@ namespace Veldrid.D3D12
             }
             catch (SharpGen.Runtime.SharpGenException ex)
             {
-                // Always dump InfoQueue (with status if empty) + PSO summary
-                // together so the failure mode is observable in one log entry.
+                // Always dump InfoQueue + PSO summary + bytecode reflection
+                // + InputLayout side-by-side so we can spot semantic
+                // mismatches without the debug layer's help.
                 string iqDump = drainInfoQueue(gd);
                 string callbackDump = drainCallbackMessages(gd);
                 string summary =
@@ -225,14 +228,79 @@ namespace Veldrid.D3D12
                     + $"Topology={psoDesc.PrimitiveTopologyType} "
                     + $"Samples={psoDesc.SampleDescription.Count}";
 
+                string shaderInputDump = reflectVertexShaderInputs(psoDesc.VertexShader);
+                string layoutDump = dumpInputLayout(psoDesc.InputLayout);
+
                 throw new VeldridException(
-                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\nPSO summary: {summary}\nInfoQueue (polled):\n{iqDump}DebugMessages (callback):\n{callbackDump}",
+                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\n"
+                    + $"PSO summary: {summary}\n"
+                    + $"VS reflected inputs:\n{shaderInputDump}"
+                    + $"Our InputLayout:\n{layoutDump}"
+                    + $"InfoQueue (polled):\n{iqDump}"
+                    + $"DebugMessages (callback):\n{callbackDump}",
                     ex);
             }
 
             // rangeArraysToKeepAlive can fall off the stack now — the root
             // signature has been created and the driver has its own copy.
             GC.KeepAlive(rangeArraysToKeepAlive);
+        }
+
+        private static string reflectVertexShaderInputs(ReadOnlyMemory<byte> vsBytecode)
+        {
+            // Read the canonical input signature directly from the
+            // compiled VS bytecode via D3DReflect. This is the EXACT
+            // semantic set that D3D12's PSO validator compares against
+            // our InputLayout. If they don't match name-for-name +
+            // index-for-index, PSO creation fails with E_INVALIDARG
+            // (which is what we keep hitting on Vortice 2.4.2 where
+            // the debug layer's actual error message is unreachable).
+            if (vsBytecode.IsEmpty)
+                return "  (no VS bytecode)\n";
+
+            try
+            {
+                using var reflection = Compiler.Reflect<ID3D11ShaderReflection>(vsBytecode.Span);
+                if (reflection == null)
+                    return "  (D3DReflect returned null — bytecode is not valid DXBC)\n";
+
+                int inputCount = reflection.Description.InputParameters;
+                if (inputCount == 0)
+                    return "  (shader declares no input parameters)\n";
+
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < inputCount; i++)
+                {
+                    var p = reflection.GetInputParameterDescription(i);
+                    sb.Append($"  [{i}] {p.SemanticName}{p.SemanticIndex} register=v{p.Register} ")
+                      .Append($"type={p.ComponentType} systemValue={p.SystemValueType}\n");
+                }
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                return $"  (reflection threw: {ex.GetType().Name}: {ex.Message})\n";
+            }
+        }
+
+        private static string dumpInputLayout(InputLayoutDescription? layoutMaybe)
+        {
+            if (layoutMaybe == null)
+                return "  (InputLayout is null)\n";
+
+            var elems = layoutMaybe.Elements;
+            if (elems == null || elems.Length == 0)
+                return "  (InputLayout is empty)\n";
+
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < elems.Length; i++)
+            {
+                var e = elems[i];
+                sb.Append($"  [{i}] {e.SemanticName}{e.SemanticIndex} slot={e.Slot} ")
+                  .Append($"offset={e.AlignedByteOffset} format={e.Format} ")
+                  .Append($"class={e.Classification} stepRate={e.InstanceDataStepRate}\n");
+            }
+            return sb.ToString();
         }
 
         private static string drainCallbackMessages(D3D12GraphicsDevice gd)
