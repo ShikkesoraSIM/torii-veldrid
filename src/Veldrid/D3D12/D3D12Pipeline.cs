@@ -176,9 +176,13 @@ namespace Veldrid.D3D12
                         StencilEnable = false,
                     },
                 InputLayout = toInputLayoutDescription(description.ShaderSet.VertexLayouts),
-                // IBStripCutValue defaults to Disabled — no need to set
-                // explicitly. The struct field name varies across Vortice
-                // versions; leaving it unset is more portable.
+                // Explicitly set IBStripCutValue to Disabled. Vortice's
+                // struct default in 2.4.2 ends up zero-initialised but the
+                // underlying D3D12 enum's "Disabled" is 0xFFFFFFFF (i.e.
+                // `D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED`); 0 maps to
+                // `_0xFFFF` which is only valid for TriangleStrip topology
+                // and triggers E_INVALIDARG on TriangleList.
+                IndexBufferStripCutValue = IndexBufferStripCutValue.Disabled,
                 PrimitiveTopologyType = toPrimitiveTopologyType(description.PrimitiveTopology),
                 // Vortice 2.4.2 derives NumRenderTargets from
                 // RenderTargetFormats.Length (Math.Min with 8) — there is
