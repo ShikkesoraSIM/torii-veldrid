@@ -50,7 +50,7 @@ namespace Veldrid.D3D12
             => new D3D12Fence(gd.Device, signaled);
 
         public override Swapchain CreateSwapchain(ref SwapchainDescription description)
-            => throw new NotImplementedException("D3D12: swapchain pending.");
+            => new D3D12Swapchain(gd, ref description);
 
         protected override Pipeline CreateGraphicsPipelineCore(ref GraphicsPipelineDescription description)
             => new D3D12Pipeline(gd, ref description);

@@ -349,7 +349,9 @@ namespace Veldrid.D3D12
         }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)
-            => throw new NotImplementedException("D3D12: swapchain present pending (session 5).");
+        {
+            Util.AssertSubtype<Swapchain, D3D12Swapchain>(swapchain).Present();
+        }
 
         private protected override void WaitForIdleCore()
         {

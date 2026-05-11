@@ -72,10 +72,44 @@ namespace Veldrid.D3D12
         public ResourceStates CurrentState { get; set; }
 
         private readonly ID3D12Resource resource;
+        private readonly bool ownsResource;
         private bool disposed;
+
+        /// <summary>
+        /// Wrap an externally-owned <see cref="ID3D12Resource"/> (e.g. a
+        /// DXGI swapchain back-buffer) as a Veldrid texture. The wrapped
+        /// resource is NOT released by <see cref="DisposeCore"/> — DXGI
+        /// owns swapchain back-buffers and would crash if we double-freed.
+        /// </summary>
+        public D3D12Texture(
+            ID3D12Resource externalResource,
+            uint width,
+            uint height,
+            PixelFormat format,
+            TextureUsage usage,
+            ResourceStates initialState)
+        {
+            Name = string.Empty;
+            resource = externalResource;
+            ownsResource = false;
+
+            Format = format;
+            Width = width;
+            Height = height;
+            Depth = 1;
+            MipLevels = 1;
+            ArrayLayers = 1;
+            Usage = usage;
+            Type = TextureType.Texture2D;
+            SampleCount = TextureSampleCount.Count1;
+            DxgiFormat = D3D12Formats.ToDxgiFormat(format, depthFormat: (usage & TextureUsage.DepthStencil) != 0);
+            HeapType = HeapType.Default;
+            CurrentState = initialState;
+        }
 
         public D3D12Texture(D3D12GraphicsDevice gd, ref TextureDescription description)
         {
+            ownsResource = true;
             Name = string.Empty;
             Format = description.Format;
             Width = description.Width;
@@ -185,7 +219,13 @@ namespace Veldrid.D3D12
         private protected override void DisposeCore()
         {
             if (disposed) return;
-            resource.Dispose();
+            // Only release the underlying resource when WE allocated it.
+            // External wraps (e.g. swapchain back-buffers from DXGI) MUST
+            // NOT be released here — DXGI owns those and double-freeing
+            // crashes the driver. The swapchain handles their lifetime
+            // explicitly via IDXGISwapChain.Dispose().
+            if (ownsResource)
+                resource.Dispose();
             disposed = true;
         }
     }
