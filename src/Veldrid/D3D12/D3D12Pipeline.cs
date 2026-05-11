@@ -86,12 +86,27 @@ namespace Veldrid.D3D12
             Name = string.Empty;
 
             // --- Vertex stride cache --------------------------------
+            // Use the declared Stride if non-zero, otherwise sum the
+            // element sizes. Some framework codepaths construct
+            // VertexLayoutDescription via the no-stride ctor expecting
+            // the backend to compute it from elements at PSO build
+            // time. Always compute as a safety net even if the field
+            // looks populated — cheap, deterministic.
             var vertexLayouts = description.ShaderSet.VertexLayouts;
             VertexStridePerSlot = new int[vertexLayouts?.Length ?? 0];
             if (vertexLayouts != null)
             {
                 for (int i = 0; i < vertexLayouts.Length; i++)
-                    VertexStridePerSlot[i] = (int)vertexLayouts[i].Stride;
+                {
+                    int declared = (int)vertexLayouts[i].Stride;
+                    int computed = 0;
+                    foreach (var elem in vertexLayouts[i].Elements)
+                        computed += vertexFormatStride(elem.Format);
+                    // Prefer the larger of declared / computed — declared
+                    // can over-pad (caller's deliberate alignment); computed
+                    // is the minimum that fits all elements.
+                    VertexStridePerSlot[i] = declared > computed ? declared : computed;
+                }
             }
 
             // --- Root signature --------------------------------------
