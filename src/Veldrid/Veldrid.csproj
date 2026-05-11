@@ -1,7 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup Label="Nuget">
-    <PackageId>ppy.Veldrid</PackageId>
+    <!--
+      PackageId reflects the NuGet identifier we publish under, not the
+      runtime assembly identity. Renamed from `ppy.Veldrid` so that the
+      Torii fork can publish to NuGet under our own account — the `ppy.*`
+      prefix is reserved by ppy and we don't own push rights to it.
+      The DLL on disk is still `ppy.Veldrid.dll` (AssemblyName unchanged)
+      and the `using Veldrid;` namespace works exactly as before, so
+      consumers only need to update their PackageReference name; nothing
+      else in their code touches it.
+    -->
+    <PackageId>Torii.Veldrid</PackageId>
     <Version>0.0.0</Version>
     <IsPackable>true</IsPackable>
   </PropertyGroup>

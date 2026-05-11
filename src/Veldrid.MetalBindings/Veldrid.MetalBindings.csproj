@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup Label="Nuget">
-    <PackageId>ppy.Veldrid.MetalBindings</PackageId>
+    <!-- Renamed from ppy.* to Torii.* — same reason as Torii.Veldrid; we
+         can't push to the `ppy.*` prefix on NuGet. AssemblyName unchanged
+         so referencing code keeps working. -->
+    <PackageId>Torii.Veldrid.MetalBindings</PackageId>
     <Version>0.0.0</Version>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
