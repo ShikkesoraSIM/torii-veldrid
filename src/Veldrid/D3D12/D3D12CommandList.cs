@@ -76,8 +76,18 @@ namespace Veldrid.D3D12
 
         public override void Begin()
         {
+            // If a previous recording failed mid-frame (e.g. ClearColorTarget
+            // threw before reaching End), isRecording is still set — D3D11
+            // recovers from this implicitly because its CommandList state
+            // is per-device-context, but D3D12's per-command-list state
+            // would force the next frame to throw on Begin forever.
+            // Force a clean restart instead of bubbling the original error
+            // through every subsequent frame.
             if (isRecording)
-                throw new VeldridException("D3D12CommandList.Begin called while already recording.");
+            {
+                try { commandList.Close(); } catch { /* already closed or corrupt; recycle anyway */ }
+                isRecording = false;
+            }
 
             allocator.Reset();
             commandList.Reset(allocator, initialState: null);
@@ -244,13 +254,21 @@ namespace Veldrid.D3D12
 
         private protected override void ClearColorTargetCore(uint index, RgbaFloat clearColor)
         {
+            // D3D11 / Vulkan / Metal tolerate ClearColorTarget without an
+            // explicit SetFramebuffer because their per-context state always
+            // has the main swapchain implicitly bound. D3D12's per-cmdlist
+            // state has no such implicit default, so we replicate the same
+            // behaviour by auto-binding the main swapchain framebuffer the
+            // first time a clear/draw needs a target. The deferred renderer
+            // in osu-framework relies on this — it calls Clear() before
+            // emitting any SetFrameBufferEvent for the main back-buffer.
             if (currentFramebuffer == null)
-                throw new VeldridException("ClearColorTarget called without a bound framebuffer.");
+                autoBindMainSwapchainFramebuffer(callerName: "ClearColorTarget");
 
             // Compute the RTV handle for the requested slot. The framebuffer
             // pre-allocates a contiguous run starting at RtvHandle; we
             // advance by descriptorSize * index bytes.
-            CpuDescriptorHandle target = currentFramebuffer.RtvHandle
+            CpuDescriptorHandle target = currentFramebuffer!.RtvHandle
                 + (int)(index * gd.RtvAllocator.DescriptorSize);
 
             commandList.ClearRenderTargetView(target, new Color4(
@@ -259,7 +277,10 @@ namespace Veldrid.D3D12
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)
         {
-            if (currentFramebuffer == null || !currentFramebuffer.HasDepth)
+            if (currentFramebuffer == null)
+                autoBindMainSwapchainFramebuffer(callerName: "ClearDepthStencil");
+
+            if (!currentFramebuffer!.HasDepth)
                 throw new VeldridException("ClearDepthStencil called without a bound depth attachment.");
 
             commandList.ClearDepthStencilView(
@@ -267,6 +288,24 @@ namespace Veldrid.D3D12
                 ClearFlags.Depth | ClearFlags.Stencil,
                 depth,
                 stencil);
+        }
+
+        /// <summary>
+        /// Bind the device's main swapchain framebuffer as the active
+        /// render target. Used as an implicit default when a render
+        /// command is issued without a prior <see cref="SetFramebufferCore"/>
+        /// call — matches the D3D11 / Vulkan / Metal backends' behaviour
+        /// of treating the main swapchain as the always-bound default.
+        /// </summary>
+        private void autoBindMainSwapchainFramebuffer(string callerName)
+        {
+            var mainFb = gd.MainSwapchain?.Framebuffer;
+            if (mainFb == null)
+                throw new VeldridException(
+                    $"{callerName} called without a bound framebuffer, and the device has no main swapchain to fall back to. "
+                    + "Set a framebuffer explicitly via CommandList.SetFramebuffer before issuing render commands.");
+
+            SetFramebufferCore(mainFb);
         }
 
         // ---- Vertex + index buffer binding ----------------------------
