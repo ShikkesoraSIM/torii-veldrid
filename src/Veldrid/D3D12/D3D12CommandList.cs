@@ -280,13 +280,8 @@ namespace Veldrid.D3D12
             CpuDescriptorHandle target = currentFramebuffer!.RtvHandle
                 + (int)(index * gd.RtvAllocator.DescriptorSize);
 
-            // TEMP DIAG: force RED clear for ALL color clears, so if we
-            // see red on screen we know Clear is reaching the display
-            // (= Present + RTV + swapchain wiring all work) and the
-            // 'black screen' is somewhere in the draw path. If we see
-            // black, the issue is upstream of Clear (wrong buffer,
-            // Present showing the wrong index, etc).
-            commandList.ClearRenderTargetView(target, new Color4(1.0f, 0.0f, 0.0f, 1.0f));
+            commandList.ClearRenderTargetView(target, new Color4(
+                clearColor.R, clearColor.G, clearColor.B, clearColor.A));
         }
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)
@@ -353,16 +348,22 @@ namespace Veldrid.D3D12
 
         private static int stridePerSlot(D3D12Pipeline pipeline, int slot)
         {
-            // We don't have the original VertexLayoutDescription stored on
-            // the pipeline; for the common single-VBO case, the stride
-            // equals the sum of all attribute sizes in slot 0. Hard-coded
-            // to 0 here — D3D12 will fall back to the PSO's input layout
-            // stride which is the source of truth anyway. A proper
-            // pipeline-side stride cache lands in S6 if profiling shows
-            // it matters.
-            _ = pipeline;
-            _ = slot;
-            return 0;
+            // The scaffold's 'D3D12 will fall back to the PSO's input
+            // layout stride which is the source of truth anyway' was
+            // wrong — D3D12 uses VertexBufferView.StrideInBytes literally
+            // and does NOT derive it from the PSO's input layout at
+            // draw time. Stride=0 makes every vertex re-read byte 0 of
+            // the buffer, every triangle ends up with identical vertices
+            // (zero area), and the rasterizer silently drops the whole
+            // draw → black screen even though the rest of the pipeline
+            // is wired correctly.
+            //
+            // D3D12Pipeline caches the strides from the original
+            // VertexLayoutDescription[] at construction time. Look up by
+            // slot index.
+            if (slot < 0 || slot >= pipeline.VertexStridePerSlot.Length)
+                return 0;
+            return pipeline.VertexStridePerSlot[slot];
         }
 
         private protected override void SetIndexBufferCore(DeviceBuffer buffer, IndexFormat format, uint offset)

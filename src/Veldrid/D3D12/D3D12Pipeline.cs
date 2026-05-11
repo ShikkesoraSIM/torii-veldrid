@@ -66,6 +66,16 @@ namespace Veldrid.D3D12
         /// <summary>Root parameter index of the Sampler descriptor table for ResourceLayout #i. -1 if no samplers.</summary>
         public int[] SamplerRootParamPerLayout { get; }
 
+        /// <summary>
+        /// Stride in bytes per VertexLayoutDescription slot. CommandList.SetVertexBuffer
+        /// needs this to populate VertexBufferView.StrideInBytes — D3D12 uses that
+        /// value literally to step through the vertex buffer per vertex, it does NOT
+        /// derive it from the PSO's InputLayout at draw time. Without correct strides
+        /// every vertex reads byte 0 of the buffer, every triangle is degenerate, and
+        /// the rasterizer drops the entire draw → black screen.
+        /// </summary>
+        public int[] VertexStridePerSlot { get; }
+
         private readonly ID3D12PipelineState pso;
         private readonly ID3D12RootSignature rootSignature;
         private bool disposed;
@@ -74,6 +84,15 @@ namespace Veldrid.D3D12
             : base(ref description)
         {
             Name = string.Empty;
+
+            // --- Vertex stride cache --------------------------------
+            var vertexLayouts = description.ShaderSet.VertexLayouts;
+            VertexStridePerSlot = new int[vertexLayouts?.Length ?? 0];
+            if (vertexLayouts != null)
+            {
+                for (int i = 0; i < vertexLayouts.Length; i++)
+                    VertexStridePerSlot[i] = (int)vertexLayouts[i].Stride;
+            }
 
             // --- Root signature --------------------------------------
             int layoutCount = description.ResourceLayouts?.Length ?? 0;
