@@ -210,12 +210,21 @@ namespace Veldrid.D3D12
             // RTV (and optional DSV) descriptor handles the framebuffer
             // pre-allocated. The handles are contiguous in the RTV heap so
             // the count + start-handle pair is sufficient — no copying.
-            // Vortice's overload `(int, CpuDescriptorHandle, Nullable<CpuDescriptorHandle>)`
-            // implicitly treats the start handle as a contiguous range.
             commandList.OMSetRenderTargets(
                 d12Fb.ColorTargets.Count,
                 d12Fb.RtvHandle,
                 d12Fb.HasDepth ? d12Fb.DsvHandle : (CpuDescriptorHandle?)null);
+
+            // D3D12 doesn't reset viewport/scissor when render targets
+            // change (unlike D3D11). A fresh cmdlist defaults both to
+            // empty/zero, so rasterised draws clip to a 0-pixel area
+            // and produce a completely black framebuffer regardless of
+            // shader output. Set both to the framebuffer's full extent
+            // — osu-framework can later override via SetViewport /
+            // SetScissor for clipping draw regions, but the default
+            // viewport must cover the target.
+            commandList.RSSetViewport(0f, 0f, d12Fb.Width, d12Fb.Height, 0f, 1f);
+            commandList.RSSetScissorRect(new Vortice.RawRect(0, 0, (int)d12Fb.Width, (int)d12Fb.Height));
 
             currentFramebuffer = d12Fb;
         }
