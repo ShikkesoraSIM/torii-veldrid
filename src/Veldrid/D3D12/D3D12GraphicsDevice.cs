@@ -214,6 +214,31 @@ namespace Veldrid.D3D12
 
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
 
+#if DEBUG
+            // Now that the device exists, fetch its InfoQueue and set
+            // an allow-all storage filter so the debug layer actually
+            // RECORDS messages (not just emits them to OutputDebugString).
+            // This is the prerequisite for our drainInfoQueue diagnostic
+            // path in D3D12Pipeline to surface real validator output.
+            try
+            {
+                infoQueue = device.QueryInterfaceOrNull<ID3D12InfoQueue>();
+                if (infoQueue != null)
+                {
+                    // Don't break the debugger on these — we just want to
+                    // observe and log; breakpoints fire from the catch path.
+                    infoQueue.SetBreakOnSeverity(MessageSeverity.Error, false);
+                    infoQueue.SetBreakOnSeverity(MessageSeverity.Corruption, false);
+                    infoQueue.SetBreakOnSeverity(MessageSeverity.Warning, false);
+                    // Allow-all storage: every severity, every category.
+                    // Without this Vortice may inherit a more conservative
+                    // default filter that drops Info / Message-level chatter.
+                    infoQueue.PushEmptyStorageFilter();
+                }
+            }
+            catch { /* InfoQueue is best-effort diagnostic plumbing — never block device init on it. */ }
+#endif
+
             // Materialise the main swapchain eagerly when a description
             // was passed (the GraphicsDevice.CreateD3D12(opts, swapchainDesc)
             // overload, which is what osu-framework's VeldridDevice uses).
@@ -228,6 +253,16 @@ namespace Veldrid.D3D12
 
             PostDeviceCreated();
         }
+
+        /// <summary>
+        /// D3D12 InfoQueue interface (debug layer's stored-message buffer).
+        /// Null when the debug layer is not active (release build or
+        /// Graphics Tools optional feature not installed). Used by the
+        /// PSO failure path in <see cref="D3D12Pipeline"/> to surface
+        /// validator messages alongside opaque HRESULT codes.
+        /// </summary>
+        internal ID3D12InfoQueue? InfoQueue => infoQueue;
+        private readonly ID3D12InfoQueue? infoQueue;
 
         // ---- Abstract overrides — scaffold stubs ------------------------
         //

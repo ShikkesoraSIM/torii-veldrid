@@ -208,33 +208,20 @@ namespace Veldrid.D3D12
             }
             catch (SharpGen.Runtime.SharpGenException ex)
             {
-                // Without the Windows SDK Graphics Tools optional feature
-                // installed, EnableDebugLayer() silently no-ops and PSO
-                // failures arrive as opaque E_FAIL / E_INVALIDARG. Pull
-                // the device's InfoQueue (created unconditionally — the
-                // queue interface exists even when the debug layer isn't
-                // emitting), drain whatever's there, and rethrow with the
-                // raw D3D12 validator messages attached. Diagnoses 90% of
-                // PSO mismatches without needing the SDK layers DLL.
-                var msgs = drainInfoQueue(gd);
-                if (msgs.Length > 0)
-                {
-                    throw new VeldridException(
-                        $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}). InfoQueue dump:\n{msgs}",
-                        ex);
-                }
-                // If InfoQueue is also empty (no debug layer at all),
-                // dump the description summary so callers at least see
-                // what we tried to build.
-                throw new VeldridException(
-                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}). "
-                    + $"PSO summary: VS={psoDesc.VertexShader.Length}B PS={psoDesc.PixelShader.Length}B "
+                // Always dump InfoQueue (with status if empty) + PSO summary
+                // together so the failure mode is observable in one log entry.
+                string iqDump = drainInfoQueue(gd);
+                string summary =
+                    $"VS={psoDesc.VertexShader.Length}B PS={psoDesc.PixelShader.Length}B "
                     + $"RTs={psoDesc.RenderTargetFormats?.Length ?? 0} "
                     + $"firstRT={(psoDesc.RenderTargetFormats?.Length > 0 ? psoDesc.RenderTargetFormats[0].ToString() : "n/a")} "
                     + $"DSV={psoDesc.DepthStencilFormat} "
                     + $"InputElements={psoDesc.InputLayout?.Elements?.Length ?? 0} "
                     + $"Topology={psoDesc.PrimitiveTopologyType} "
-                    + $"Samples={psoDesc.SampleDescription.Count}",
+                    + $"Samples={psoDesc.SampleDescription.Count}";
+
+                throw new VeldridException(
+                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\nPSO summary: {summary}\nInfoQueue:\n{iqDump}",
                     ex);
             }
 
@@ -245,32 +232,46 @@ namespace Veldrid.D3D12
 
         private static string drainInfoQueue(D3D12GraphicsDevice gd)
         {
-            // ID3D12InfoQueue is queried off the device; succeeds even when
-            // the debug layer is dormant (it's a sibling COM interface).
-            // GetMessage returns the validator's actual diagnostic text.
+            // Use the device's pre-configured InfoQueue (set up during
+            // device construction with an allow-all storage filter +
+            // break-on-severity disabled). Falls back to a fresh QI if
+            // for some reason the device didn't cache one.
+            var iq = gd.InfoQueue;
+            if (iq == null)
+            {
+                try { iq = gd.Device.QueryInterfaceOrNull<ID3D12InfoQueue>(); }
+                catch { return "  (InfoQueue not available — debug layer inactive or Graphics Tools not installed)\n"; }
+                if (iq == null) return "  (InfoQueue not available — debug layer inactive or Graphics Tools not installed)\n";
+            }
+
             try
             {
-                if (gd.Device.QueryInterfaceOrNull<ID3D12InfoQueue>() is not ID3D12InfoQueue iq)
-                    return string.Empty;
+                ulong count = iq.NumStoredMessages;
+                if (count == 0)
+                    return "  (InfoQueue present but empty — debug layer attached but no validator messages recorded)\n";
 
-                using (iq)
+                var sb = new System.Text.StringBuilder();
+                ulong limit = count < 50UL ? count : 50UL;
+                for (ulong i = 0; i < limit; i++)
                 {
-                    ulong count = iq.NumStoredMessages;
-                    if (count == 0) return string.Empty;
-
-                    var sb = new System.Text.StringBuilder();
-                    for (ulong i = 0; i < count && i < 50; i++)
+                    try
                     {
                         var msg = iq.GetMessage(i);
-                        sb.Append("  [").Append(msg.Severity).Append("] ").Append(msg.Description).Append('\n');
+                        sb.Append("  [").Append(msg.Severity).Append("] ")
+                          .Append(msg.Description).Append('\n');
                     }
-                    iq.ClearStoredMessages();
-                    return sb.ToString();
+                    catch (Exception ex)
+                    {
+                        sb.Append("  (GetMessage(").Append(i).Append(") threw: ").Append(ex.Message).Append(")\n");
+                        break;
+                    }
                 }
+                iq.ClearStoredMessages();
+                return sb.ToString();
             }
-            catch
+            catch (Exception ex)
             {
-                return string.Empty;
+                return $"  (InfoQueue read threw: {ex.GetType().Name}: {ex.Message})\n";
             }
         }
 
