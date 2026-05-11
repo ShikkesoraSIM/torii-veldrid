@@ -162,6 +162,16 @@ namespace Veldrid.D3D12
                 // explicitly. The struct field name varies across Vortice
                 // versions; leaving it unset is more portable.
                 PrimitiveTopologyType = toPrimitiveTopologyType(description.PrimitiveTopology),
+                // Vortice 2.4.2 derives NumRenderTargets from
+                // RenderTargetFormats.Length (Math.Min with 8) — there is
+                // no separate public NumRenderTargets field. So the array
+                // length MUST equal the actual attachment count;
+                // returning a fixed 8-element array with 7 Format.Unknown
+                // trailers tells D3D12 we want 8 render targets, only the
+                // first of which has a real format. The validator catches
+                // that as a render-target-format mismatch against the
+                // pixel shader's SV_TARGET signature and rejects with
+                // E_INVALIDARG.
                 RenderTargetFormats = collectRtvFormats(description.Outputs),
                 DepthStencilFormat = description.Outputs.DepthAttachment != null
                     ? D3D12Formats.ToDxgiFormat(description.Outputs.DepthAttachment.Value.Format, depthFormat: true)
@@ -558,12 +568,19 @@ namespace Veldrid.D3D12
 
         private static Format[] collectRtvFormats(OutputDescription outputs)
         {
-            var arr = new Format[8];
-            if (outputs.ColorAttachments != null)
-            {
-                for (int i = 0; i < outputs.ColorAttachments.Length && i < 8; i++)
-                    arr[i] = D3D12Formats.ToDxgiFormat(outputs.ColorAttachments[i].Format, depthFormat: false);
-            }
+            // Size to actual attachment count, NOT padded to 8.
+            // Vortice 2.4.2 marshals NumRenderTargets =
+            // Math.Min(RenderTargetFormats.Length, 8), and D3D12's
+            // PSO validator compares that count against the pixel
+            // shader's SV_TARGETn output signature byte-for-byte —
+            // padding with Format.Unknown trailers makes D3D12 think
+            // we want 8 RTs and rejects the whole PSO.
+            int count = outputs.ColorAttachments?.Length ?? 0;
+            if (count > 8) count = 8;
+
+            var arr = new Format[count];
+            for (int i = 0; i < count; i++)
+                arr[i] = D3D12Formats.ToDxgiFormat(outputs.ColorAttachments![i].Format, depthFormat: false);
             return arr;
         }
 
