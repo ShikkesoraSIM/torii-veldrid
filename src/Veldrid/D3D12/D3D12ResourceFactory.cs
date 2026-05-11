@@ -56,19 +56,19 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: graphics pipeline pending.");
 
         protected override Texture CreateTextureCore(ulong nativeTexture, ref TextureDescription description)
-            => throw new NotImplementedException("D3D12: native-texture import pending.");
+            => throw new NotImplementedException("D3D12: native-texture import pending (S5 — needed for swapchain back-buffer wrap).");
 
         protected override Texture CreateTextureCore(ref TextureDescription description)
-            => throw new NotImplementedException("D3D12: texture creation pending.");
+            => new D3D12Texture(gd, ref description);
 
         protected override TextureView CreateTextureViewCore(ref TextureViewDescription description)
-            => throw new NotImplementedException("D3D12: texture view pending.");
+            => new D3D12TextureView(gd, ref description);
 
         protected override DeviceBuffer CreateBufferCore(ref BufferDescription description)
-            => throw new NotImplementedException("D3D12: buffer creation pending.");
+            => new D3D12Buffer(gd, ref description);
 
         protected override Sampler CreateSamplerCore(ref SamplerDescription description)
-            => throw new NotImplementedException("D3D12: sampler creation pending.");
+            => new D3D12Sampler(ref description);
 
         protected override Shader CreateShaderCore(ref ShaderDescription description)
             => throw new NotImplementedException("D3D12: shader creation pending.");
