@@ -272,8 +272,14 @@ namespace Veldrid.D3D12
                 for (int i = 0; i < inputCount; i++)
                 {
                     var p = reflection.GetInputParameterDescription(i);
-                    sb.Append($"  [{i}] {p.SemanticName}{p.SemanticIndex} register=v{p.Register} ")
-                      .Append($"type={p.ComponentType} systemValue={p.SystemValueType}\n");
+                    // UsageMask: 0x1=X, 0x3=XY, 0x7=XYZ, 0xF=XYZW.
+                    // This is the bit that lets us spot width mismatches
+                    // (e.g. shader reads .xyzw but InputLayout only
+                    // provides .x → PSO E_INVALIDARG).
+                    sb.Append($"  [{i}] {p.SemanticName}{p.SemanticIndex} reg=v{p.Register} ")
+                      .Append($"usageMask=0x{(int)p.UsageMask:X} ")
+                      .Append($"readMask=0x{(int)p.ReadWriteMask:X} ")
+                      .Append($"type={p.ComponentType} sysVal={p.SystemValueType}\n");
                 }
                 return sb.ToString();
             }
