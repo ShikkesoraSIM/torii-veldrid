@@ -116,6 +116,21 @@ namespace Veldrid.D3D12
                 debugInterface.Dispose();
                 IsDebugEnabled = true;
             }
+
+            // Enable DRED — when DXGI_ERROR_DEVICE_REMOVED hits on
+            // Present (GPU hung mid-frame), DRED gives us a "breadcrumb"
+            // trail of the last command-list operations the GPU executed
+            // plus the page-fault VA if the hang was an OOB access. The
+            // generic DEVICE_REMOVED HRESULT is otherwise opaque.
+            //
+            // Must be enabled BEFORE D3D12CreateDevice for the device to
+            // honour the breadcrumb storage opt-in.
+            if (VorticeD3D12.D3D12GetDebugInterface<ID3D12DeviceRemovedExtendedDataSettings>(out var dredSettings).Success)
+            {
+                dredSettings!.SetAutoBreadcrumbsEnablement(DredEnablement.ForcedOn);
+                dredSettings.SetPageFaultEnablement(DredEnablement.ForcedOn);
+                dredSettings.Dispose();
+            }
 #endif
 
             // Walk DXGI adapters and create the device on the first one that

@@ -260,7 +260,18 @@ namespace Veldrid.D3D12
 
             // Step 2: DXGI Present.
             int syncInterval = SyncToVerticalBlank ? 1 : 0;
-            swapChain3.Present(syncInterval, PresentFlags.None).CheckError();
+            var presentResult = swapChain3.Present(syncInterval, PresentFlags.None);
+            if (presentResult.Failure)
+            {
+                // DXGI_ERROR_DEVICE_REMOVED + friends — wrap with DRED
+                // breadcrumb / page-fault context if available so we know
+                // WHICH draw caused the hang.
+                string dred = D3D12DredDump.Capture(gd);
+                throw new VeldridException(
+                    $"D3D12 Present failed: HRESULT=0x{presentResult.Code:X8}. "
+                    + $"DeviceRemovedReason=0x{gd.Device.DeviceRemovedReason.Code:X8}.\n"
+                    + $"DRED:\n{dred}");
+            }
 
             // Step 3: advance to the buffer the next frame will render to.
             currentBackBufferIndex = swapChain3.CurrentBackBufferIndex;
