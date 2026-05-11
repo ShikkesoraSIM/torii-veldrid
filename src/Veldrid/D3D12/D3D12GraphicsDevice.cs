@@ -441,7 +441,21 @@ namespace Veldrid.D3D12
         }
 
         private protected override void WaitForNextFrameReadyCore()
-            => throw new NotImplementedException("D3D12: frame pacing pending.");
+        {
+            // Frame-pacing hook. osu-framework calls this every frame as a
+            // pacing-only barrier — it's not a correctness requirement, it
+            // exists for CPU-side latency tuning (FrameSync.VSync targets,
+            // NVIDIA Reflex hooks, etc).
+            //
+            // D3D12 backend choice: no-op. The swapchain Present already
+            // applies vsync (FlipDiscard with SyncInterval=1 when the user
+            // selects FrameSync.VSync), so frame-time output is correct.
+            // We just don't add an additional CPU-side wait barrier.
+            // Implementing a real wait-for-frame-ready would require a
+            // latency-waitable swapchain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)
+            // — pending future Nova work on Reflex-equivalent latency
+            // tuning for D3D12.
+        }
 
         private protected override void UpdateTextureCore(
             Texture texture,
