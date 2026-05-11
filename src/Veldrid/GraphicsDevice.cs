@@ -1205,6 +1205,44 @@ namespace Veldrid
         }
 #endif
 
+// Direct3D 12 backend factory methods. Mirror the D3D11 surface so callers
+// (osu-framework's VeldridDevice) can dispatch by an `if`/switch on the
+// chosen backend without each call site needing to know about D3D12-specific
+// device options. Currently exposes the most-used overloads (with /
+// without swapchain, with hwnd + size shortcut); the UWP / SwapChainPanel
+// path is deferred to S6 if a real consumer needs it.
+        /// <summary>
+        ///     Creates a new <see cref="GraphicsDevice" /> using Direct3D 12.
+        /// </summary>
+        public static GraphicsDevice CreateD3D12(GraphicsDeviceOptions options)
+        {
+            return new D3D12.D3D12GraphicsDevice(options, null);
+        }
+
+        /// <summary>
+        ///     Creates a new <see cref="GraphicsDevice" /> using Direct3D 12, with a main Swapchain.
+        /// </summary>
+        public static GraphicsDevice CreateD3D12(GraphicsDeviceOptions options, SwapchainDescription swapchainDescription)
+        {
+            return new D3D12.D3D12GraphicsDevice(options, swapchainDescription);
+        }
+
+        /// <summary>
+        ///     Creates a new <see cref="GraphicsDevice" /> using Direct3D 12, with a main Swapchain
+        ///     created against the given Win32 hwnd at the given dimensions.
+        /// </summary>
+        public static GraphicsDevice CreateD3D12(GraphicsDeviceOptions options, IntPtr hwnd, uint width, uint height)
+        {
+            var swapchainDescription = new SwapchainDescription(
+                SwapchainSource.CreateWin32(hwnd, IntPtr.Zero),
+                width, height,
+                options.SwapchainDepthFormat,
+                options.SyncToVerticalBlank,
+                options.SwapchainSrgbFormat);
+
+            return new D3D12.D3D12GraphicsDevice(options, swapchainDescription);
+        }
+
 #if !EXCLUDE_VULKAN_BACKEND
         /// <summary>
         ///     Creates a new <see cref="GraphicsDevice" /> using Vulkan.
