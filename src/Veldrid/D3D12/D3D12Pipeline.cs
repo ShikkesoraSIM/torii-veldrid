@@ -157,7 +157,24 @@ namespace Veldrid.D3D12
                 BlendState = toBlendDescription(description.BlendState, description.Outputs),
                 SampleMask = uint.MaxValue,
                 RasterizerState = toRasterizerDescription(description.RasterizerState),
-                DepthStencilState = toDepthStencilDescription(description.DepthStencilState),
+                // Match DepthStencilState to whether the PSO actually has
+                // a depth-stencil attachment. D3D12 validates that if
+                // DepthEnable is true, DepthStencilFormat must NOT be
+                // Unknown — otherwise E_INVALIDARG. Most osu-framework
+                // pipelines run with no depth target on the main back
+                // buffer (it's a 2D ImGui-style renderer), so we have to
+                // force-disable depth here regardless of what the upstream
+                // DepthStencilStateDescription says when no attachment
+                // is present.
+                DepthStencilState = description.Outputs.DepthAttachment != null
+                    ? toDepthStencilDescription(description.DepthStencilState)
+                    : new DepthStencilDescription
+                    {
+                        DepthEnable = false,
+                        DepthWriteMask = DepthWriteMask.Zero,
+                        DepthFunc = VorticeComparisonFunction.Always,
+                        StencilEnable = false,
+                    },
                 InputLayout = toInputLayoutDescription(description.ShaderSet.VertexLayouts),
                 // IBStripCutValue defaults to Disabled — no need to set
                 // explicitly. The struct field name varies across Vortice
