@@ -62,9 +62,12 @@ namespace Veldrid.D3D12
 
         // Main swapchain is created on demand via CreateSwapchain; the device
         // itself doesn't own one unless a SwapchainDescription was passed at
-        // construction time. Scaffold returns null — implementation comes when
-        // we wire D3D12Swapchain.
-        public override Swapchain MainSwapchain => null!;
+        // construction time, in which case we materialise it eagerly so the
+        // first frame can present without a separate factory call. Mirrors
+        // D3D11GraphicsDevice's MainSwapchain behaviour.
+        public override Swapchain MainSwapchain => mainSwapchain!;
+
+        private readonly D3D12Swapchain? mainSwapchain;
 
         public override GraphicsDeviceFeatures Features { get; }
 
@@ -210,6 +213,18 @@ namespace Veldrid.D3D12
             samplerAllocator   = new D3D12DescriptorAllocator(device, DescriptorHeapType.Sampler,           capacity: 2048,   shaderVisible: true);
 
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
+
+            // Materialise the main swapchain eagerly when a description
+            // was passed (the GraphicsDevice.CreateD3D12(opts, swapchainDesc)
+            // overload, which is what osu-framework's VeldridDevice uses).
+            // Without this, MainSwapchain returns null and the deferred
+            // renderer NREs on the first Present — that's the failure mode
+            // surfacing as "renderer failed to initialise" in the toast.
+            if (swapchainDesc.HasValue)
+            {
+                var desc = swapchainDesc.Value;
+                mainSwapchain = new D3D12Swapchain(this, ref desc);
+            }
 
             PostDeviceCreated();
         }
