@@ -435,7 +435,26 @@ namespace Veldrid.D3D12
 
         private static InputLayoutDescription toInputLayoutDescription(VertexLayoutDescription[] vertexLayouts)
         {
+            // Two corrections vs the original scaffold:
+            //
+            // 1. Semantic name mapping must match what the HLSL shader
+            //    bytecode actually declares — TextureCoordinate → "TEXCOORD"
+            //    (NOT "TEXTURECOORDINATE" from .ToString().ToUpperInvariant()).
+            //    SPIRV-Cross + the D3D11 backend (D3D11ResourceCache.
+            //    getSemanticString) both produce the short forms, so the
+            //    D3D12 PSO validator was rejecting every pipeline as
+            //    "input signature mismatch" → E_FAIL.
+            //
+            // 2. Repeated semantics need incrementing indices ("TEXCOORD0",
+            //    "TEXCOORD1", ...) per the HLSL signature emitted by SPIRV-
+            //    Cross. The scaffold was hardcoding semanticIndex:0 for
+            //    every element, so multi-attribute vertex layouts (osu!'s
+            //    TexturedVertex2D — Position + Color + TexCoord(0) +
+            //    TexRect/Custom(TexCoord1) + …) collided on the same slot.
+            //    Mirror D3D11's SemanticIndices counter pattern.
             var elements = new List<InputElementDescription>();
+            int positionIdx = 0, texCoordIdx = 0, normalIdx = 0, colorIdx = 0;
+
             for (int slot = 0; slot < vertexLayouts.Length; slot++)
             {
                 var layout = vertexLayouts[slot];
@@ -443,9 +462,39 @@ namespace Veldrid.D3D12
                 foreach (var e in layout.Elements)
                 {
                     int useOffset = e.Offset != 0 ? (int)e.Offset : offset;
+
+                    string semanticName;
+                    int semanticIndex;
+                    switch (e.Semantic)
+                    {
+                        case VertexElementSemantic.Position:
+                            semanticName = "POSITION";
+                            semanticIndex = positionIdx++;
+                            break;
+                        case VertexElementSemantic.Normal:
+                            semanticName = "NORMAL";
+                            semanticIndex = normalIdx++;
+                            break;
+                        case VertexElementSemantic.TextureCoordinate:
+                            semanticName = "TEXCOORD";
+                            semanticIndex = texCoordIdx++;
+                            break;
+                        case VertexElementSemantic.Color:
+                            semanticName = "COLOR";
+                            semanticIndex = colorIdx++;
+                            break;
+                        default:
+                            // Fallback for any future-added semantic — use
+                            // the raw enum name uppercased so the error is
+                            // at least debuggable rather than throwing.
+                            semanticName = e.Semantic.ToString().ToUpperInvariant();
+                            semanticIndex = 0;
+                            break;
+                    }
+
                     elements.Add(new InputElementDescription(
-                        semanticName: e.Semantic.ToString().ToUpperInvariant(),
-                        semanticIndex: 0,
+                        semanticName: semanticName,
+                        semanticIndex: semanticIndex,
                         format: vertexFormatToDxgi(e.Format),
                         offset: useOffset,
                         slot: slot,
