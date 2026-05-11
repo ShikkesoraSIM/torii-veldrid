@@ -295,10 +295,64 @@ namespace Veldrid.D3D12
         }
 
         protected override MappedResource MapCore(IMappableResource resource, MapMode mode, uint subresource)
-            => throw new NotImplementedException("D3D12: resource mapping pending.");
+        {
+            // Only UPLOAD / READBACK heap resources can be CPU-mapped directly.
+            // DEFAULT-heap mapping would require a staging round-trip; Veldrid
+            // doesn't ask for that path (callers create Staging-flagged
+            // resources when they need CPU access).
+            if (resource is D3D12Buffer buffer)
+            {
+                if (buffer.HeapType != HeapType.Upload && buffer.HeapType != HeapType.Readback)
+                    throw new VeldridException("D3D12: cannot map a DEFAULT-heap buffer. Mark it Staging or Dynamic at creation time.");
+
+                // Range(0, 0) means "we don't intend to read" — a driver
+                // hint that skips the CPU-cache-coherence flush. For
+                // ReadWrite mode we DO read, so pass null = "full range".
+                Vortice.Direct3D12.Range? readRange = mode == MapMode.Write
+                    ? new Vortice.Direct3D12.Range { Begin = 0, End = 0 }
+                    : (Vortice.Direct3D12.Range?)null;
+
+                IntPtr mapped;
+                unsafe
+                {
+                    void* dataPtr;
+                    buffer.NativeResource.Map(0, readRange, &dataPtr).CheckError();
+                    mapped = (IntPtr)dataPtr;
+                }
+
+                return new MappedResource(
+                    resource,
+                    mode,
+                    mapped,
+                    sizeInBytes: buffer.SizeInBytes,
+                    subresource: 0,
+                    rowPitch: 0,
+                    depthPitch: 0);
+            }
+
+            if (resource is D3D12Texture)
+            {
+                // Texture mapping is more involved (256-byte row alignment
+                // per D3D12 spec — needs GetCopyableFootprints math). Most
+                // Veldrid texture workflows go through UpdateTexture instead;
+                // Map is mainly used for Staging textures in readback flows.
+                // Defer full implementation until a real consumer needs it.
+                throw new NotImplementedException("D3D12: texture Map pending — use UpdateTexture instead.");
+            }
+
+            throw new VeldridException($"D3D12: unmappable resource type {resource.GetType().Name}.");
+        }
 
         protected override void UnmapCore(IMappableResource resource, uint subresource)
-            => throw new NotImplementedException("D3D12: resource mapping pending.");
+        {
+            if (resource is D3D12Buffer buffer)
+            {
+                buffer.NativeResource.Unmap(0);
+                return;
+            }
+            // No-op for unsupported types — Map would have thrown, so this
+            // should be unreachable, but defensive.
+        }
 
         protected override void PlatformDispose()
         {
@@ -381,10 +435,157 @@ namespace Veldrid.D3D12
             uint x, uint y, uint z,
             uint width, uint height, uint depth,
             uint mipLevel, uint arrayLayer)
-            => throw new NotImplementedException("D3D12: texture upload pending.");
+        {
+            var d12Tex = Util.AssertSubtype<Texture, D3D12Texture>(texture);
+
+            // Compute the destination subresource's CopyableFootprint —
+            // gives us the row pitch (256-byte aligned per D3D12 spec),
+            // total required upload buffer size, and the sub-resource
+            // layout the CopyTextureRegion will consume.
+            int subresource = (int)(mipLevel + arrayLayer * d12Tex.MipLevels);
+            var desc = d12Tex.NativeResource.Description;
+
+            // Vortice's friendly wrapper returns the footprint array +
+            // companion arrays. We only need subresource 0 of the slice
+            // we're updating, so request 1 entry.
+            var footprints = new PlacedSubresourceFootPrint[1];
+            var numRowsArr = new int[1];
+            var rowSizesArr = new ulong[1];
+            device.GetCopyableFootprints(
+                desc,
+                firstSubresource: subresource,
+                numSubresources: 1,
+                baseOffset: 0,
+                footprints,
+                numRowsArr,
+                rowSizesArr,
+                out ulong totalBytes);
+
+            var footprint = footprints[0];
+            int numRows = numRowsArr[0];
+            ulong rowSizeInBytes = rowSizesArr[0];
+
+            // Allocate an upload buffer big enough to hold the padded
+            // sub-resource. Per-call allocation — a pool would amortise
+            // but UpdateTexture is rare (texture init, not per-frame).
+            var uploadDesc = ResourceDescription.Buffer(totalBytes);
+            var uploadHeap = new HeapProperties(HeapType.Upload);
+            var uploadResource = device.CreateCommittedResource(
+                uploadHeap, HeapFlags.None,
+                uploadDesc, ResourceStates.GenericRead, null);
+
+            // Copy the source data into the upload buffer with the right
+            // row alignment. The caller's source data is tightly packed;
+            // we pad rows to the footprint's row pitch.
+            unsafe
+            {
+                void* mappedPtr;
+                uploadResource.Map(0, null, &mappedPtr).CheckError();
+                byte* dst = (byte*)mappedPtr + footprint.Offset;
+                byte* src = (byte*)source;
+                int srcRowPitch = (int)rowSizeInBytes;
+                int dstRowPitch = (int)footprint.Footprint.RowPitch;
+
+                for (int slice = 0; slice < depth; slice++)
+                {
+                    for (int row = 0; row < numRows; row++)
+                    {
+                        System.Buffer.MemoryCopy(
+                            src + (slice * numRows + row) * srcRowPitch,
+                            dst + (slice * dstRowPitch * numRows) + (row * dstRowPitch),
+                            dstRowPitch, srcRowPitch);
+                    }
+                }
+                uploadResource.Unmap(0);
+            }
+
+            // Open a transient command list, transition dest texture into
+            // CopyDest, CopyTextureRegion, transition back, execute, wait.
+            // The synchronous wait matches the UpdateTextureCore contract
+            // (callers expect the upload to be GPU-visible on return).
+            using var allocator = device.CreateCommandAllocator(CommandListType.Direct);
+            using var cmdList = device.CreateCommandList<ID3D12GraphicsCommandList>(
+                0, CommandListType.Direct, allocator, null);
+
+            var originalState = d12Tex.CurrentState;
+            D3D12Util.TransitionTexture(cmdList, d12Tex, ResourceStates.CopyDest);
+
+            var dstLoc = new TextureCopyLocation(d12Tex.NativeResource, subresource);
+            var srcLoc = new TextureCopyLocation(uploadResource, footprint);
+            cmdList.CopyTextureRegion(dstLoc, (int)x, (int)y, (int)z, srcLoc, null);
+
+            D3D12Util.TransitionTexture(cmdList, d12Tex, originalState);
+
+            cmdList.Close();
+            directQueue.ExecuteCommandLists(new[] { (ID3D12CommandList)cmdList });
+            WaitForIdleCore();
+
+            uploadResource.Dispose();
+        }
 
         private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, IntPtr source, uint sizeInBytes)
-            => throw new NotImplementedException("D3D12: buffer upload pending.");
+        {
+            var d12Buf = Util.AssertSubtype<DeviceBuffer, D3D12Buffer>(buffer);
+
+            // UPLOAD-heap buffers can be written directly via Map. No
+            // staging round-trip needed. This is the fast path for the
+            // Dynamic / Staging buffers.
+            if (d12Buf.HeapType == HeapType.Upload)
+            {
+                unsafe
+                {
+                    void* mappedPtr;
+                    d12Buf.NativeResource.Map(0, null, &mappedPtr).CheckError();
+                    System.Buffer.MemoryCopy(
+                        (void*)source,
+                        (byte*)mappedPtr + bufferOffsetInBytes,
+                        d12Buf.SizeInBytes - bufferOffsetInBytes,
+                        sizeInBytes);
+                    d12Buf.NativeResource.Unmap(0);
+                }
+                return;
+            }
+
+            // DEFAULT-heap buffer: staging round-trip. Allocate a tiny
+            // transient upload buffer, memcpy into it, CopyBufferRegion
+            // into the dest, wait. Slow — per-frame uniform updates should
+            // use a Dynamic buffer to avoid this path.
+            var uploadDesc = ResourceDescription.Buffer(sizeInBytes);
+            var uploadHeap = new HeapProperties(HeapType.Upload);
+            var uploadResource = device.CreateCommittedResource(
+                uploadHeap, HeapFlags.None,
+                uploadDesc, ResourceStates.GenericRead, null);
+
+            unsafe
+            {
+                void* mappedPtr;
+                uploadResource.Map(0, null, &mappedPtr).CheckError();
+                System.Buffer.MemoryCopy(
+                    (void*)source, mappedPtr,
+                    sizeInBytes, sizeInBytes);
+                uploadResource.Unmap(0);
+            }
+
+            using var allocator = device.CreateCommandAllocator(CommandListType.Direct);
+            using var cmdList = device.CreateCommandList<ID3D12GraphicsCommandList>(
+                0, CommandListType.Direct, allocator, null);
+
+            var originalState = d12Buf.CurrentState;
+            D3D12Util.TransitionBuffer(cmdList, d12Buf, ResourceStates.CopyDest);
+
+            cmdList.CopyBufferRegion(
+                d12Buf.NativeResource, bufferOffsetInBytes,
+                uploadResource, 0,
+                sizeInBytes);
+
+            D3D12Util.TransitionBuffer(cmdList, d12Buf, originalState);
+
+            cmdList.Close();
+            directQueue.ExecuteCommandLists(new[] { (ID3D12CommandList)cmdList });
+            WaitForIdleCore();
+
+            uploadResource.Dispose();
+        }
 
         private protected override bool GetPixelFormatSupportCore(
             PixelFormat format,

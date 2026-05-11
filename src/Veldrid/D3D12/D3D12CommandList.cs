@@ -355,31 +355,94 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: indirect dispatch pending S6.");
 
         protected override void ResolveTextureCore(Texture source, Texture destination)
-            => throw new NotImplementedException("D3D12: ResolveSubresource pending S6.");
+        {
+            var src = Util.AssertSubtype<Texture, D3D12Texture>(source);
+            var dst = Util.AssertSubtype<Texture, D3D12Texture>(destination);
+
+            D3D12Util.TransitionTexture(commandList, src, ResourceStates.ResolveSource);
+            D3D12Util.TransitionTexture(commandList, dst, ResourceStates.ResolveDest);
+
+            commandList.ResolveSubresource(
+                dst.NativeResource, 0,
+                src.NativeResource, 0,
+                src.DxgiFormat);
+        }
 
         protected override void CopyBufferCore(DeviceBuffer source, uint sourceOffset, DeviceBuffer destination, uint destinationOffset, uint sizeInBytes)
-            => throw new NotImplementedException("D3D12: buffer copy pending S6.");
+        {
+            var src = Util.AssertSubtype<DeviceBuffer, D3D12Buffer>(source);
+            var dst = Util.AssertSubtype<DeviceBuffer, D3D12Buffer>(destination);
+
+            D3D12Util.TransitionBuffer(commandList, src, ResourceStates.CopySource);
+            D3D12Util.TransitionBuffer(commandList, dst, ResourceStates.CopyDest);
+
+            commandList.CopyBufferRegion(
+                dst.NativeResource, destinationOffset,
+                src.NativeResource, sourceOffset,
+                sizeInBytes);
+        }
 
         protected override void CopyTextureCore(
             Texture source, uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer,
             Texture destination, uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer,
             uint width, uint height, uint depth, uint layerCount)
-            => throw new NotImplementedException("D3D12: texture copy pending S6.");
+        {
+            var src = Util.AssertSubtype<Texture, D3D12Texture>(source);
+            var dst = Util.AssertSubtype<Texture, D3D12Texture>(destination);
+
+            D3D12Util.TransitionTexture(commandList, src, ResourceStates.CopySource);
+            D3D12Util.TransitionTexture(commandList, dst, ResourceStates.CopyDest);
+
+            for (uint layer = 0; layer < layerCount; layer++)
+            {
+                int srcSub = (int)(srcMipLevel + (srcBaseArrayLayer + layer) * src.MipLevels);
+                int dstSub = (int)(dstMipLevel + (dstBaseArrayLayer + layer) * dst.MipLevels);
+
+                var srcLoc = new TextureCopyLocation(src.NativeResource, srcSub);
+                var dstLoc = new TextureCopyLocation(dst.NativeResource, dstSub);
+                var srcBox = new Box(
+                    (int)srcX, (int)srcY, (int)srcZ,
+                    (int)(srcX + width), (int)(srcY + height), (int)(srcZ + depth));
+
+                commandList.CopyTextureRegion(
+                    dstLoc, (int)dstX, (int)dstY, (int)dstZ,
+                    srcLoc, srcBox);
+            }
+        }
 
         private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, IntPtr source, uint sizeInBytes)
-            => throw new NotImplementedException("D3D12: in-list buffer update pending S6 (needs upload staging pool).");
+        {
+            // In-list buffer update would need a transient upload buffer
+            // that survives until the command list completes on the GPU
+            // (we'd dispose it in a fence callback). The simpler device-
+            // side UpdateBuffer (outside any command list) does this
+            // synchronously already and covers the typical osu-framework
+            // call pattern. Defer the in-list path until profiling shows
+            // a real call site exists.
+            throw new NotImplementedException("D3D12: in-list UpdateBuffer pending — use GraphicsDevice.UpdateBuffer instead.");
+        }
 
         private protected override void GenerateMipmapsCore(Texture texture)
-            => throw new NotImplementedException("D3D12: mipmap generation pending S6.");
+        {
+            // D3D12 has no built-in mipmap generation (D3D11 had it as a
+            // free pass via the immediate context). Production-grade impl
+            // is a small compute shader doing 2×2 box-filter downsamples
+            // across the mip chain. That's a self-contained ~150 LOC
+            // shader-and-dispatch effort; deferred until osu-framework
+            // hits this path.
+            throw new NotImplementedException("D3D12: GenerateMipmaps needs a per-format compute downsampler — deferred.");
+        }
 
-        // Debug markers — wire when PIX support lands in S6.
-        private protected override void PushDebugGroupCore(string name)
-            => throw new NotImplementedException("D3D12: debug-marker push pending S6.");
-
-        private protected override void PopDebugGroupCore()
-            => throw new NotImplementedException("D3D12: debug-marker pop pending S6.");
-
-        private protected override void InsertDebugMarkerCore(string name)
-            => throw new NotImplementedException("D3D12: debug-marker insert pending S6.");
+        // Debug markers: Vortice 2.4.2 only exposes the low-level
+        // `(int meta, IntPtr pData, int size)` form of BeginEvent/
+        // SetMarker, which expects a serialised PIX event blob. A
+        // proper PIX wiring needs the WinPixEventRuntime DLL + the
+        // BeginEventOnCommandList helper from there. That's a small
+        // self-contained S6.5 effort. For now they're no-ops — losing
+        // PIX timeline annotations only matters during deep GPU debug
+        // sessions, which we don't gate first-light testing on.
+        private protected override void PushDebugGroupCore(string name) { }
+        private protected override void PopDebugGroupCore() { }
+        private protected override void InsertDebugMarkerCore(string name) { }
     }
 }
