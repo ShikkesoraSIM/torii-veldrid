@@ -87,17 +87,29 @@ namespace Veldrid.D3D12
             // pass a dangling pointer to the driver.
             var rangeArraysToKeepAlive = new List<DescriptorRange1[]>();
 
+            // Running per-resource-type base shader registers across all
+            // layouts. SPIRV-Cross's HLSL emitter flattens Vulkan
+            // descriptor sets into a single register space (space0),
+            // numbering registers SEQUENTIALLY by resource type:
+            //
+            //   set 0 / binding 0 (UBO) → b0
+            //   set 1 / binding 0 (SRV) → t0
+            //   set 1 / binding 1 (Sampler) → s0
+            //   set 2 / binding 0 (UBO) → b1   (next CBV after set 0's b0)
+            //
+            // The scaffold's space-per-layout scheme (registerSpace=i)
+            // does NOT match what the shader bytecode expects, so PSO
+            // creation failed with E_INVALIDARG. Use space=0 universally
+            // and walk the base registers per type as we iterate layouts.
+            int cbvBase = 0, srvBase = 0, uavBase = 0, samplerBase = 0;
+
             for (int i = 0; i < layoutCount; i++)
             {
                 var layout = Util.AssertSubtype<ResourceLayout, D3D12ResourceLayout>(description.ResourceLayouts![i]);
 
                 if (layout.CbvSrvUavCount > 0)
                 {
-                    // One descriptor table per layout for non-sampler
-                    // resources. The slot inside the table maps 1:1 to
-                    // the layout's CBV/SRV/UAV element order (see
-                    // D3D12ResourceLayout.GetTableSlot).
-                    var ranges = buildCbvSrvUavRanges(layout, registerSpace: i);
+                    var ranges = buildCbvSrvUavRanges(layout, ref cbvBase, ref srvBase, ref uavBase);
                     rangeArraysToKeepAlive.Add(ranges);
 
                     CbvSrvUavRootParamPerLayout[i] = rootParams.Count;
@@ -117,10 +129,11 @@ namespace Veldrid.D3D12
                         new DescriptorRange1(
                             DescriptorRangeType.Sampler,
                             layout.SamplerCount,
-                            baseShaderRegister: 0,
-                            registerSpace: i,
+                            baseShaderRegister: samplerBase,
+                            registerSpace: 0,
                             offsetInDescriptorsFromTableStart: 0)
                     };
+                    samplerBase += layout.SamplerCount;
                     rangeArraysToKeepAlive.Add(samplerRange);
 
                     SamplerRootParamPerLayout[i] = rootParams.Count;
@@ -466,13 +479,18 @@ namespace Veldrid.D3D12
 
         // ---- RootSignature helpers --------------------------------------
 
-        private static DescriptorRange1[] buildCbvSrvUavRanges(D3D12ResourceLayout layout, int registerSpace)
+        private static DescriptorRange1[] buildCbvSrvUavRanges(D3D12ResourceLayout layout, ref int cbvBase, ref int srvBase, ref int uavBase)
         {
             // Walk the layout's non-sampler elements once and bucket them
             // by descriptor range type. CBV/SRV/UAV each need their own
-            // range entry in the table — we DON'T fold them into a single
-            // range because the descriptor types are different on the
-            // shader side (b#, t#, u# register namespaces).
+            // range entry in the table — they're different namespaces on
+            // the shader side (b#, t#, u#).
+            //
+            // Register-space convention: SPIRV-Cross's HLSL emitter places
+            // EVERYTHING in space=0, with running per-type base registers
+            // (b0, b1, …) across descriptor sets. Use the caller-supplied
+            // ref-counters to allocate the next available slot per type
+            // and advance them in lockstep with the shader's view.
             var ranges = new List<DescriptorRange1>();
             int cbvCount = 0, srvCount = 0, uavCount = 0;
 
@@ -493,22 +511,25 @@ namespace Veldrid.D3D12
             if (cbvCount > 0)
             {
                 ranges.Add(new DescriptorRange1(DescriptorRangeType.ConstantBufferView, cbvCount,
-                    baseShaderRegister: 0, registerSpace: registerSpace,
+                    baseShaderRegister: cbvBase, registerSpace: 0,
                     offsetInDescriptorsFromTableStart: offset));
+                cbvBase += cbvCount;
                 offset += cbvCount;
             }
             if (srvCount > 0)
             {
                 ranges.Add(new DescriptorRange1(DescriptorRangeType.ShaderResourceView, srvCount,
-                    baseShaderRegister: 0, registerSpace: registerSpace,
+                    baseShaderRegister: srvBase, registerSpace: 0,
                     offsetInDescriptorsFromTableStart: offset));
+                srvBase += srvCount;
                 offset += srvCount;
             }
             if (uavCount > 0)
             {
                 ranges.Add(new DescriptorRange1(DescriptorRangeType.UnorderedAccessView, uavCount,
-                    baseShaderRegister: 0, registerSpace: registerSpace,
+                    baseShaderRegister: uavBase, registerSpace: 0,
                     offsetInDescriptorsFromTableStart: offset));
+                uavBase += uavCount;
             }
 
             return ranges.ToArray();
