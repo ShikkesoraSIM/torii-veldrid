@@ -219,13 +219,19 @@ namespace Veldrid.D3D12
         private protected override void DisposeCore()
         {
             if (disposed) return;
-            // Only release the underlying resource when WE allocated it.
-            // External wraps (e.g. swapchain back-buffers from DXGI) MUST
-            // NOT be released here — DXGI owns those and double-freeing
-            // crashes the driver. The swapchain handles their lifetime
-            // explicitly via IDXGISwapChain.Dispose().
-            if (ownsResource)
-                resource.Dispose();
+            // Always release OUR COM reference to the underlying resource.
+            // This is a Release on the Vortice ComObject — for owned
+            // resources, it drops the only ref and destroys the native
+            // ID3D12Resource. For swapchain back-buffer wraps (ownsResource=false),
+            // DXGI's GetBuffer<>() bumped the COM ref count when we
+            // acquired it; we MUST drop our own ref before
+            // IDXGISwapChain::ResizeBuffers can succeed, otherwise it
+            // returns DXGI_ERROR_INVALID_CALL with "the application made
+            // a call with outstanding references". The previous
+            // ownsResource-guard was based on the misconception that
+            // releasing a back-buffer wrap would free DXGI's internal
+            // copy — it doesn't, DXGI keeps its own refs separately.
+            resource.Dispose();
             disposed = true;
         }
     }
