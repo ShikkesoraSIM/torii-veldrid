@@ -451,14 +451,22 @@ namespace Veldrid.D3D12
 
         private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, IntPtr source, uint sizeInBytes)
         {
-            // In-list buffer update would need a transient upload buffer
-            // that survives until the command list completes on the GPU
-            // (we'd dispose it in a fence callback). The simpler device-
-            // side UpdateBuffer (outside any command list) does this
-            // synchronously already and covers the typical osu-framework
-            // call pattern. Defer the in-list path until profiling shows
-            // a real call site exists.
-            throw new NotImplementedException("D3D12: in-list UpdateBuffer pending — use GraphicsDevice.UpdateBuffer instead.");
+            // Strict semantics: in-list buffer update should queue an
+            // upload buffer copy that runs when this cmdlist executes on
+            // the GPU. That needs a transient upload buffer surviving past
+            // cmdlist completion and disposed via fence callback — pending.
+            //
+            // Pragmatic substitute: delegate to the device-level
+            // UpdateBuffer, which performs the upload synchronously
+            // outside the cmdlist. Safe for the osu-framework call
+            // pattern (which uses CommandList.UpdateBuffer mostly to
+            // initialise buffers — VeldridIndexBuffer..ctor populating
+            // the static index pattern, vertex-batch flushes — where
+            // the buffer hasn't been bound to a draw call yet at the
+            // moment of update). If profiling later reveals a hot path
+            // that needs true in-list ordering, swap this for the
+            // upload-buffer + CopyBufferRegion impl.
+            gd.UpdateBuffer(buffer, bufferOffsetInBytes, source, sizeInBytes);
         }
 
         private protected override void GenerateMipmapsCore(Texture texture)
