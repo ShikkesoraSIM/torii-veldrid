@@ -280,9 +280,8 @@ namespace Veldrid.D3D12
             CpuDescriptorHandle target = currentFramebuffer!.RtvHandle
                 + (int)(index * gd.RtvAllocator.DescriptorSize);
 
-            // TEMP DIAG: red clear so we can see if anything is being
-            // drawn on top of it. Combined with blend OFF probe below.
-            commandList.ClearRenderTargetView(target, new Color4(1.0f, 0.0f, 0.0f, 1.0f));
+            commandList.ClearRenderTargetView(target, new Color4(
+                clearColor.R, clearColor.G, clearColor.B, clearColor.A));
         }
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)

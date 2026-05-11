@@ -646,8 +646,7 @@ namespace Veldrid.D3D12
                     var att = veldridBlend.AttachmentStates[i];
                     desc.RenderTarget[i] = new RenderTargetBlendDescription
                     {
-                        // TEMP DIAG: blend OFF to see raw pixel shader output
-                        BlendEnable = false,
+                        BlendEnable = att.BlendEnabled,
                         LogicOpEnable = false,
                         SourceBlend = toBlend(att.SourceColorFactor),
                         DestinationBlend = toBlend(att.DestinationColorFactor),
