@@ -215,6 +215,7 @@ namespace Veldrid.D3D12
                 // Always dump InfoQueue (with status if empty) + PSO summary
                 // together so the failure mode is observable in one log entry.
                 string iqDump = drainInfoQueue(gd);
+                string callbackDump = drainCallbackMessages(gd);
                 string summary =
                     $"VS={psoDesc.VertexShader.Length}B PS={psoDesc.PixelShader.Length}B "
                     + $"RTs={psoDesc.RenderTargetFormats?.Length ?? 0} "
@@ -225,13 +226,37 @@ namespace Veldrid.D3D12
                     + $"Samples={psoDesc.SampleDescription.Count}";
 
                 throw new VeldridException(
-                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\nPSO summary: {summary}\nInfoQueue:\n{iqDump}",
+                    $"D3D12 CreateGraphicsPipelineState failed (HRESULT {ex.HResult:X8}).\nPSO summary: {summary}\nInfoQueue (polled):\n{iqDump}DebugMessages (callback):\n{callbackDump}",
                     ex);
             }
 
             // rangeArraysToKeepAlive can fall off the stack now — the root
             // signature has been created and the driver has its own copy.
             GC.KeepAlive(rangeArraysToKeepAlive);
+        }
+
+        private static string drainCallbackMessages(D3D12GraphicsDevice gd)
+        {
+            // The push-mode counterpart to drainInfoQueue. Reads any
+            // messages that ID3D12InfoQueue1.RegisterMessageCallback
+            // captured into D3D12GraphicsDevice.DebugMessages since this
+            // device was created.
+            var list = gd.DebugMessages;
+            if (list == null)
+                return "  (callback unavailable — ID3D12InfoQueue1 not exposed by Vortice on this device)\n";
+
+            lock (gd)
+            {
+                if (list.Count == 0)
+                    return "  (callback registered but no messages received — debug layer is silent for this draw path)\n";
+
+                var sb = new System.Text.StringBuilder();
+                int count = list.Count < 50 ? list.Count : 50;
+                for (int i = 0; i < count; i++)
+                    sb.Append("  ").Append(list[i]).Append('\n');
+                list.Clear();
+                return sb.ToString();
+            }
         }
 
         private static string drainInfoQueue(D3D12GraphicsDevice gd)

@@ -215,28 +215,48 @@ namespace Veldrid.D3D12
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
 
 #if DEBUG
-            // Now that the device exists, fetch its InfoQueue and set
-            // an allow-all storage filter so the debug layer actually
-            // RECORDS messages (not just emits them to OutputDebugString).
-            // This is the prerequisite for our drainInfoQueue diagnostic
-            // path in D3D12Pipeline to surface real validator output.
+            // Wire up debug layer diagnostics. Two parallel mechanisms so
+            // we capture validator output regardless of which one Vortice's
+            // binding happens to honour:
+            //
+            // 1. ID3D12InfoQueue (the storage queue) — drainable on demand
+            //    from the PSO-failure catch in D3D12Pipeline. Tries to
+            //    register an allow-all filter so messages are retained.
+            //
+            // 2. ID3D12InfoQueue1.RegisterMessageCallback — the modern
+            //    push-mode API that pumps every message to a delegate as
+            //    soon as the debug layer produces it. Captured to an
+            //    in-process buffer + emitted to Console.Error so DebugView
+            //    OR a stderr-redirecting launcher both pick them up
+            //    without relying on OutputDebugString (which empirically
+            //    does NOT get the messages on this build of Vortice).
             try
             {
                 infoQueue = device.QueryInterfaceOrNull<ID3D12InfoQueue>();
                 if (infoQueue != null)
                 {
-                    // Don't break the debugger on these — we just want to
-                    // observe and log; breakpoints fire from the catch path.
                     infoQueue.SetBreakOnSeverity(MessageSeverity.Error, false);
                     infoQueue.SetBreakOnSeverity(MessageSeverity.Corruption, false);
                     infoQueue.SetBreakOnSeverity(MessageSeverity.Warning, false);
-                    // Allow-all storage: every severity, every category.
-                    // Without this Vortice may inherit a more conservative
-                    // default filter that drops Info / Message-level chatter.
                     infoQueue.PushEmptyStorageFilter();
                 }
             }
-            catch { /* InfoQueue is best-effort diagnostic plumbing — never block device init on it. */ }
+            catch { }
+
+            try
+            {
+                var infoQueue1 = device.QueryInterfaceOrNull<ID3D12InfoQueue1>();
+                if (infoQueue1 != null)
+                {
+                    // Keep the delegate alive — RegisterMessageCallback's
+                    // unmanaged side holds a function pointer that the GC
+                    // would otherwise reclaim mid-callback.
+                    messageCallback = onD3D12DebugMessage;
+                    infoQueue1.RegisterMessageCallback(messageCallback, MessageCallbackFlags.None);
+                    debugMessages = new System.Collections.Generic.List<string>();
+                }
+            }
+            catch { }
 #endif
 
             // Materialise the main swapchain eagerly when a description
@@ -263,6 +283,31 @@ namespace Veldrid.D3D12
         /// </summary>
         internal ID3D12InfoQueue? InfoQueue => infoQueue;
         private readonly ID3D12InfoQueue? infoQueue;
+
+        // Live debug-message buffer populated by onD3D12DebugMessage via
+        // ID3D12InfoQueue1.RegisterMessageCallback. The PSO failure path
+        // reads this in addition to the polled InfoQueue so we get
+        // diagnostic coverage even when Vortice's InfoQueue plumbing is
+        // not actually retaining messages.
+        internal System.Collections.Generic.List<string>? DebugMessages => debugMessages;
+        private readonly System.Collections.Generic.List<string>? debugMessages;
+#if DEBUG
+        private readonly MessageCallback? messageCallback;
+
+        private void onD3D12DebugMessage(MessageCategory category, MessageSeverity severity, MessageId id, string description)
+        {
+            string line = $"[{severity}/{category}/#{(int)id}] {description}";
+            // Lock — debug layer may invoke from a driver worker thread.
+            lock (this)
+            {
+                debugMessages?.Add(line);
+            }
+            // Also push to stderr so external launchers (DebugView, our
+            // own launcher's stderr-redirected log file, etc.) can see
+            // messages live as they happen instead of only on PSO failure.
+            try { Console.Error.WriteLine("D3D12: " + line); } catch { /* stderr might be closed */ }
+        }
+#endif
 
         // ---- Abstract overrides — scaffold stubs ------------------------
         //
