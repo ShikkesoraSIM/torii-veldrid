@@ -467,9 +467,14 @@ namespace Veldrid.D3D12
             // free pass via the immediate context). Production-grade impl
             // is a small compute shader doing 2×2 box-filter downsamples
             // across the mip chain. That's a self-contained ~150 LOC
-            // shader-and-dispatch effort; deferred until osu-framework
-            // hits this path.
-            throw new NotImplementedException("D3D12: GenerateMipmaps needs a per-format compute downsampler — deferred.");
+            // shader-and-dispatch effort; deferred until we have time for
+            // it.
+            //
+            // For now: no-op. Sampling above mip 0 will pull uninitialised
+            // data, which makes distant textures look noisy — that's the
+            // tradeoff vs. crashing the whole renderer. Acceptable for the
+            // first-light Nova D3D12 build; revisit before any wider
+            // rollout.
         }
 
         // Debug markers: Vortice 2.4.2 only exposes the low-level

@@ -247,7 +247,16 @@ namespace Veldrid.D3D12
         // and disposed, which is what session 1 is proving end-to-end.
 
         public override TextureSampleCount GetSampleCountLimit(PixelFormat format, bool depthFormat)
-            => throw new NotImplementedException("D3D12: GetSampleCountLimit pending.");
+        {
+            // Report no MSAA support for now — osu-framework / DeferredRenderer
+            // will skip multisampled framebuffer paths and fall back to
+            // single-sample rendering. A proper impl probes via
+            // device.CheckFeatureSupport(MultisampleQualityLevels) for each
+            // requested sample count, but that requires Vortice's pinned-
+            // pointer marshalling for the feature-data struct (same blocker
+            // as the FeatureLevels probe in the ctor). Punted to a follow-up.
+            return TextureSampleCount.Count1;
+        }
 
         public override bool WaitForFence(Fence fence, ulong nanosecondTimeout)
         {
