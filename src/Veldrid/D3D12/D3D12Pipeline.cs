@@ -646,13 +646,7 @@ namespace Veldrid.D3D12
                     var att = veldridBlend.AttachmentStates[i];
                     desc.RenderTarget[i] = new RenderTargetBlendDescription
                     {
-                        // TEMP DIAG: force blend OFF on RT 0 — pixel-shader
-                        // output writes directly to the framebuffer. If we
-                        // see any non-clear-colour pixels now, the shader IS
-                        // producing output and blend was hiding it. If we
-                        // still see pure clear-colour, the bug is upstream
-                        // (vertex shader transforms / vertex stride / etc).
-                        BlendEnable = false,
+                        BlendEnable = att.BlendEnabled,
                         LogicOpEnable = false,
                         SourceBlend = toBlend(att.SourceColorFactor),
                         DestinationBlend = toBlend(att.DestinationColorFactor),

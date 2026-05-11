@@ -607,53 +607,65 @@ namespace Veldrid.D3D12
                 uploadHeap, HeapFlags.None,
                 uploadDesc, ResourceStates.GenericRead, null);
 
-            // Copy the source data into the upload buffer with the right
-            // row alignment. The caller's source data is tightly packed
-            // and sized for the SUB-RECT being uploaded (width × height ×
-            // depth × bpp), NOT for the full texture's dimensions.
+            // Footprint shenanigans: GetCopyableFootprints returns the
+            // layout for the FULL subresource (e.g. 1024×1024 RowPitch
+            // 4096), but the caller's `source` only contains data for
+            // the SUB-RECT we want uploaded (width × height × depth).
+            // CopyTextureRegion(null srcBox) reads the entire source
+            // region per the footprint — so if we use the full-subresource
+            // footprint, it pulls (NumRows × RowPitch) bytes of garbage
+            // out of the upload buffer past our actual data and writes
+            // them onto the destination texture, corrupting it.
             //
-            // CRITICAL: rowSizesArr[0] from GetCopyableFootprints returns
-            // the row size for the FULL TEXTURE's width at this mip
-            // level — it does NOT shrink with our sub-rect's width. Using
-            // that value as srcRowPitch makes the source pointer advance
-            // past the end of the caller's buffer on any sub-rect upload
-            // and crashes with AccessViolationException. Derive the
-            // actual per-row source size from the caller's sizeInBytes
-            // (total source buffer length), divided by total rows
-            // (numRows × depth). That value matches the sub-rect's
-            // width × bpp for uncompressed formats and the sub-rect's
-            // block-row × blockSize for compressed.
+            // Fix: override the footprint's Width/Height/Depth to match
+            // the sub-rect. CopyTextureRegion then only reads the
+            // sub-rect-sized chunk of the upload buffer. RowPitch must
+            // remain 256-byte aligned per D3D12 spec, so re-compute it
+            // for the sub-rect width.
+            int subRectRowPitch = (int)D3D12Util.AlignUp(
+                (ulong)(sizeInBytes / (height * depth)),
+                256);
+            footprint.Footprint.Width = (int)width;
+            footprint.Footprint.Height = (int)height;
+            footprint.Footprint.Depth = (int)depth;
+            footprint.Footprint.RowPitch = subRectRowPitch;
+
+            // Recreate the upload buffer at the now-correct sub-rect
+            // size — totalBytes from the footprint API was sized for
+            // the full subresource (way too big, mostly wasteful).
+            ulong subRectBytes = (ulong)subRectRowPitch * height * depth;
+            uploadResource.Dispose();
+            uploadResource = device.CreateCommittedResource(
+                uploadHeap, HeapFlags.None,
+                ResourceDescription.Buffer(subRectBytes),
+                ResourceStates.GenericRead, null);
+
+            // Copy the caller's tightly-packed source data into the
+            // upload buffer, padding each row to subRectRowPitch.
             unsafe
             {
                 void* mappedPtr;
                 uploadResource.Map(0, null, &mappedPtr).CheckError();
-                byte* dst = (byte*)mappedPtr + footprint.Offset;
+                byte* dst = (byte*)mappedPtr;
                 byte* src = (byte*)source;
 
-                int totalRows = numRows * (int)depth;
-                int srcRowPitch = totalRows > 0 ? (int)(sizeInBytes / (uint)totalRows) : (int)rowSizeInBytes;
-                int dstRowPitch = (int)footprint.Footprint.RowPitch;
-
-                // Defensive clamp — if srcRowPitch somehow > dstRowPitch
-                // (would mean source is wider than D3D12's aligned
-                // destination row, which shouldn't happen but Buffer
-                // MemoryCopy's third arg is the destination buffer
-                // size — keeping that clamped avoids any overflow on
-                // the destination side too).
-                int copyPerRow = srcRowPitch < dstRowPitch ? srcRowPitch : dstRowPitch;
+                int srcStride = (int)(sizeInBytes / (height * depth));
 
                 for (int slice = 0; slice < depth; slice++)
                 {
-                    for (int row = 0; row < numRows; row++)
+                    for (int row = 0; row < height; row++)
                     {
                         System.Buffer.MemoryCopy(
-                            src + (slice * numRows + row) * srcRowPitch,
-                            dst + (slice * dstRowPitch * numRows) + (row * dstRowPitch),
-                            dstRowPitch, copyPerRow);
+                            src + (slice * height + row) * srcStride,
+                            dst + (slice * subRectRowPitch * height) + (row * subRectRowPitch),
+                            subRectRowPitch, srcStride);
                     }
                 }
                 uploadResource.Unmap(0);
             }
+
+            // Re-anchor the footprint at offset 0 in the new upload buffer.
+            footprint.Offset = 0;
 
             // Open a transient command list, transition dest texture into
             // CopyDest, CopyTextureRegion, transition back, execute, wait.
