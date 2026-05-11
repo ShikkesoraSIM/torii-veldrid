@@ -35,7 +35,7 @@ namespace Veldrid.D3D12
             => throw new NotImplementedException("D3D12: compute pipeline pending.");
 
         public override Framebuffer CreateFramebuffer(ref FramebufferDescription description)
-            => throw new NotImplementedException("D3D12: framebuffer pending.");
+            => new D3D12Framebuffer(gd, ref description);
 
         public override CommandList CreateCommandList(ref CommandListDescription description)
             => new D3D12CommandList(gd, ref description);
@@ -71,6 +71,6 @@ namespace Veldrid.D3D12
             => new D3D12Sampler(ref description);
 
         protected override Shader CreateShaderCore(ref ShaderDescription description)
-            => throw new NotImplementedException("D3D12: shader creation pending.");
+            => new D3D12Shader(ref description);
     }
 }

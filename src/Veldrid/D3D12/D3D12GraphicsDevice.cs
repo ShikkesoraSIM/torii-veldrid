@@ -81,9 +81,21 @@ namespace Veldrid.D3D12
         /// </summary>
         public ID3D12CommandQueue DirectQueue => directQueue;
 
+        // Descriptor allocators — see D3D12DescriptorAllocator for rationale
+        // around heap sizing + shader-visibility. Lifetime is the device's;
+        // disposal cascades from PlatformDispose.
+        public D3D12DescriptorAllocator RtvAllocator => rtvAllocator;
+        public D3D12DescriptorAllocator DsvAllocator => dsvAllocator;
+        public D3D12DescriptorAllocator CbvSrvUavAllocator => cbvSrvUavAllocator;
+        public D3D12DescriptorAllocator SamplerAllocator => samplerAllocator;
+
         private readonly ID3D12Device device;
         private readonly IDXGIAdapter dxgiAdapter;
         private readonly ID3D12CommandQueue directQueue;
+        private readonly D3D12DescriptorAllocator rtvAllocator;
+        private readonly D3D12DescriptorAllocator dsvAllocator;
+        private readonly D3D12DescriptorAllocator cbvSrvUavAllocator;
+        private readonly D3D12DescriptorAllocator samplerAllocator;
         private readonly D3D12ResourceFactory d3d12ResourceFactory;
 
         public D3D12GraphicsDevice(GraphicsDeviceOptions options, SwapchainDescription? swapchainDesc)
@@ -180,6 +192,22 @@ namespace Veldrid.D3D12
                 CommandQueuePriority.Normal,
                 CommandQueueFlags.None,
                 nodeMask: 0));
+
+            // Descriptor heap allocators. Capacity numbers are generous —
+            // typical Torii sessions allocate hundreds of CBV/SRV/UAV
+            // descriptors per frame (one per ResourceSet bind site), not
+            // millions. RTV/DSV heaps are smaller because each framebuffer
+            // only consumes a handful of entries. Sampler heap is capped
+            // at 2048 by the D3D12 spec.
+            //
+            // The CBV/SRV/UAV and Sampler heaps are shader-visible so the
+            // GPU can dereference them via descriptor tables; RTV/DSV are
+            // CPU-only because OMSetRenderTargets pokes descriptors
+            // directly without going through a shader-visible binding.
+            rtvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.RenderTargetView,  capacity: 256,    shaderVisible: false);
+            dsvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.DepthStencilView,  capacity: 64,     shaderVisible: false);
+            cbvSrvUavAllocator = new D3D12DescriptorAllocator(device, DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,         capacity: 65536,  shaderVisible: true);
+            samplerAllocator   = new D3D12DescriptorAllocator(device, DescriptorHeapType.Sampler,           capacity: 2048,   shaderVisible: true);
 
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
 
@@ -287,6 +315,13 @@ namespace Veldrid.D3D12
                 // Best-effort — if WaitForIdle throws during dispose we still
                 // want to release everything below.
             }
+
+            // Descriptor allocators must be released before the device
+            // because they hold ID3D12DescriptorHeap children of it.
+            samplerAllocator?.Dispose();
+            cbvSrvUavAllocator?.Dispose();
+            dsvAllocator?.Dispose();
+            rtvAllocator?.Dispose();
 
             directQueue?.Dispose();
             dxgiAdapter?.Dispose();
