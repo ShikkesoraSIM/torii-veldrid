@@ -218,35 +218,11 @@ namespace Veldrid.D3D12
                 format = tex.DxgiFormat;
             }
 
-            // TEMP DIAG-BISECT: force every sprite SRV (non-RT texture)
-            // to return (1,1,1,1) on every fetch via the Shader4ComponentMapping
-            // ForceValue1 encoding. If sprites + UI appear as solid white
-            // shapes, the SRV / sampler pipeline works correctly and the
-            // remaining bug is in our texture UPLOAD (UpdateTextureCore
-            // writing wrong data). If sprites still don't appear at all,
-            // the bug is in SRV creation / state transitions / sampler.
-            bool isRenderTarget = (tex.Usage & TextureUsage.RenderTarget) != 0;
-            int componentMapping;
-            if (isRenderTarget)
-            {
-                // RT textures (the scene FBO sampled for compose) keep
-                // identity mapping so we still see the framework's draws
-                // composited onto the back buffer.
-                componentMapping = (int)ShaderComponentMapping.Default;
-            }
-            else
-            {
-                // ForceValue1 in all four channels.
-                //   c0=5 (Force1), c1=5, c2=5, c3=5, plus magic high bit (1<<12).
-                //   value = 5 | (5<<3) | (5<<6) | (5<<9) | (1<<12) = 7021
-                componentMapping = 5 | (5 << 3) | (5 << 6) | (5 << 9) | (1 << 12);
-            }
-
             var srvDesc = new ShaderResourceViewDescription
             {
                 Format = format,
                 ViewDimension = ShaderResourceViewDimension.Texture2D,
-                Shader4ComponentMapping = componentMapping,
+                Shader4ComponentMapping = ShaderComponentMapping.Default,
                 Texture2D = new Texture2DShaderResourceView
                 {
                     MostDetailedMip = (int)baseMip,
