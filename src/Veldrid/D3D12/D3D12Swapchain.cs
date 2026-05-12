@@ -4,6 +4,7 @@
 using System;
 using Vortice.Direct3D12;
 using Vortice.DXGI;
+using Vortice.Mathematics;
 
 namespace Veldrid.D3D12
 {
@@ -240,37 +241,39 @@ namespace Veldrid.D3D12
         {
             // Step 1: transition the back buffer we just rendered to from
             // RENDER_TARGET back to PRESENT. DXGI requires PRESENT state
-            // at Present-call time; user render code leaves it in
-            // RENDER_TARGET (via SetFramebuffer).
+            // at Present-call time.
+            //
+            // CRITICAL FIX: WaitForIdle / allocator reset must happen
+            // UNCONDITIONALLY, NOT only when a state transition is needed.
+            // The original code had this in an "if (CurrentState != Present)"
+            // gate. That gate fires correctly when the renderer DID draw
+            // into the back buffer (RenderTarget → Present), but the
+            // first frame of a swap (back-buffer slot freshly acquired
+            // from DXGI) starts in PRESENT state — if the renderer wrote
+            // to it and left state as Present somehow, or wrote to a
+            // DIFFERENT slot that previous frames advanced past, the
+            // WaitForIdle never runs and we race the GPU on Present.
+            // Symptom: completely black on-screen output despite all
+            // draw commands being issued correctly (audio + input fine,
+            // logs report MainMenu reached, but visual is dead).
+            // The fix is one tiny code reorder: always drain.
             var currentBackBuffer = backBuffers[currentBackBufferIndex];
+
+            gd.WaitForIdle();
+            presentAllocator.Reset();
+            presentCommandList.Reset(presentAllocator, initialState: null);
+
             if (currentBackBuffer.CurrentState != ResourceStates.Present)
             {
-                // D3D12 strictly forbids resetting a command allocator
-                // while command lists allocated from it are still
-                // in-flight on the GPU. Our WaitForNextFrameReadyCore
-                // is a no-op so the framework's frame-pacing hook
-                // doesn't enforce the wait — Present is responsible
-                // for it. WaitForIdle drains the queue, guaranteeing
-                // the previous frame's present cmd has completed
-                // before we recycle the allocator. Without this,
-                // Reset(allocator) is undefined behaviour and the
-                // driver eventually catches it as DXGI_ERROR_DEVICE_RESET
-                // ('badly formed command'). Cheap because by Present
-                // time the GPU is usually idle / near-idle anyway.
-                gd.WaitForIdle();
-
-                presentAllocator.Reset();
-                presentCommandList.Reset(presentAllocator, initialState: null);
-
                 presentCommandList.ResourceBarrierTransition(
                     currentBackBuffer.NativeResource,
                     currentBackBuffer.CurrentState,
                     ResourceStates.Present);
                 currentBackBuffer.CurrentState = ResourceStates.Present;
-
-                presentCommandList.Close();
-                gd.DirectQueue.ExecuteCommandLists(new[] { (ID3D12CommandList)presentCommandList });
             }
+
+            presentCommandList.Close();
+            gd.DirectQueue.ExecuteCommandLists(new[] { (ID3D12CommandList)presentCommandList });
 
             // Step 2: DXGI Present.
             int syncInterval = SyncToVerticalBlank ? 1 : 0;

@@ -223,9 +223,28 @@ namespace Veldrid.D3D12
             // GPU can dereference them via descriptor tables; RTV/DSV are
             // CPU-only because OMSetRenderTargets pokes descriptors
             // directly without going through a shader-visible binding.
-            rtvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.RenderTargetView,  capacity: 256,    shaderVisible: false);
-            dsvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.DepthStencilView,  capacity: 64,     shaderVisible: false);
-            cbvSrvUavAllocator = new D3D12DescriptorAllocator(device, DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,         capacity: 65536,  shaderVisible: true);
+            // Heap capacities sized for the osu-framework Deferred renderer,
+            // which creates many transient framebuffers per frame (one per
+            // layer / effect / nested compose pass) without recycling RTV
+            // descriptors. With the previous 256-slot RTV heap, the game
+            // crashed after a few seconds of rendering with
+            //   Veldrid.VeldridException: D3D12 descriptor heap
+            //   (type=RenderTargetView) exhausted: requested 1, used 256/256
+            // Bump to 65536 RTV / 16384 DSV — RTV/DSV are CPU-only heaps
+            // (~2 MB / ~512 KB at typical 32-byte handle increments), so
+            // this is essentially free. A proper free-list with
+            // frame-fence reclamation is on the S6 roadmap; until then the
+            // monotonic allocator just runs in a roomier bucket so no
+            // realistic session can exhaust it.
+            rtvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.RenderTargetView,  capacity: 65536,  shaderVisible: false);
+            dsvAllocator       = new D3D12DescriptorAllocator(device, DescriptorHeapType.DepthStencilView,  capacity: 16384,  shaderVisible: false);
+            // CBV/SRV/UAV is shader-visible: D3D12 Tier 1+ allows up to ~1M
+            // descriptors but real-world allocations need to stay under any
+            // single descriptor-table range, which is what
+            // D3D12ResourceSet uses. 65536 gave headroom in earlier sessions;
+            // bump 4× to stay ahead of the same "no recycle" issue the
+            // Deferred renderer triggers for SRVs per ResourceSet.
+            cbvSrvUavAllocator = new D3D12DescriptorAllocator(device, DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,         capacity: 262_144,  shaderVisible: true);
             samplerAllocator   = new D3D12DescriptorAllocator(device, DescriptorHeapType.Sampler,           capacity: 2048,   shaderVisible: true);
 
             d3d12ResourceFactory = new D3D12ResourceFactory(this);
@@ -608,48 +627,65 @@ namespace Veldrid.D3D12
                 uploadHeap, HeapFlags.None,
                 uploadDesc, ResourceStates.GenericRead, null);
 
-            // CORRECTED upload pattern:
+            // Footprint shenanigans: GetCopyableFootprints returns the
+            // layout for the FULL subresource (e.g. 1024×1024 RowPitch
+            // 4096), but the caller's `source` only contains data for
+            // the SUB-RECT we want uploaded (width × height × depth).
+            // CopyTextureRegion(null srcBox) reads the entire source
+            // region per the footprint — so if we use the full-subresource
+            // footprint, it pulls (NumRows × RowPitch) bytes of garbage
+            // out of the upload buffer past our actual data and writes
+            // them onto the destination texture, corrupting it.
             //
-            // Keep the footprint EXACTLY as GetCopyableFootprints gave
-            // it back (describing the full subresource layout). The
-            // upload buffer we allocated above is sized for that full
-            // layout (totalBytes from the same call). Fill ONLY the
-            // sub-rect's data into the upload buffer, padded per-row
-            // to the footprint's RowPitch. Then in CopyTextureRegion,
-            // pass an explicit pSrcBox that says 'read only the first
-            // width × height × depth region from the source layout'.
-            // The driver does the right thing — copies just the
-            // sub-rect to (x, y, z) in the destination subresource.
-            //
-            // The previous attempt (overriding Width/Height/Depth on
-            // the footprint then disposing+recreating the upload
-            // buffer at a smaller size) confused Vortice's marshaller
-            // somehow and ended up with corrupted texture data even
-            // though byte-level math was correct in isolation. Using
-            // pSrcBox is the canonical D3D12 idiom anyway.
-            int dstRowPitch = (int)footprint.Footprint.RowPitch;
-            int srcRowSize = (int)(sizeInBytes / (height * depth));
-            int dstSliceStride = dstRowPitch * numRows;
+            // Fix: override the footprint's Width/Height/Depth to match
+            // the sub-rect. CopyTextureRegion then only reads the
+            // sub-rect-sized chunk of the upload buffer. RowPitch must
+            // remain 256-byte aligned per D3D12 spec, so re-compute it
+            // for the sub-rect width.
+            int subRectRowPitch = (int)D3D12Util.AlignUp(
+                (ulong)(sizeInBytes / (height * depth)),
+                256);
+            footprint.Footprint.Width = (int)width;
+            footprint.Footprint.Height = (int)height;
+            footprint.Footprint.Depth = (int)depth;
+            footprint.Footprint.RowPitch = subRectRowPitch;
 
+            // Recreate the upload buffer at the now-correct sub-rect
+            // size — totalBytes from the footprint API was sized for
+            // the full subresource (way too big, mostly wasteful).
+            ulong subRectBytes = (ulong)subRectRowPitch * height * depth;
+            uploadResource.Dispose();
+            uploadResource = device.CreateCommittedResource(
+                uploadHeap, HeapFlags.None,
+                ResourceDescription.Buffer(subRectBytes),
+                ResourceStates.GenericRead, null);
+
+            // Copy the caller's tightly-packed source data into the
+            // upload buffer, padding each row to subRectRowPitch.
             unsafe
             {
                 void* mappedPtr;
                 uploadResource.Map(0, null, &mappedPtr).CheckError();
-                byte* dst = (byte*)mappedPtr + (long)footprint.Offset;
+                byte* dst = (byte*)mappedPtr;
                 byte* src = (byte*)source;
+
+                int srcStride = (int)(sizeInBytes / (height * depth));
 
                 for (int slice = 0; slice < depth; slice++)
                 {
                     for (int row = 0; row < height; row++)
                     {
                         System.Buffer.MemoryCopy(
-                            src + (slice * height + row) * srcRowSize,
-                            dst + slice * dstSliceStride + row * dstRowPitch,
-                            srcRowSize, srcRowSize);
+                            src + (slice * height + row) * srcStride,
+                            dst + (slice * subRectRowPitch * height) + (row * subRectRowPitch),
+                            subRectRowPitch, srcStride);
                     }
                 }
                 uploadResource.Unmap(0);
             }
+
+            // Re-anchor the footprint at offset 0 in the new upload buffer.
+            footprint.Offset = 0;
 
             // Open a transient command list, transition dest texture into
             // CopyDest, CopyTextureRegion, transition back, execute, wait.
@@ -664,17 +700,7 @@ namespace Veldrid.D3D12
 
             var dstLoc = new TextureCopyLocation(d12Tex.NativeResource, subresource);
             var srcLoc = new TextureCopyLocation(uploadResource, footprint);
-
-            // Tell the driver to consume ONLY the (width × height × depth)
-            // sub-rect at the origin of the source footprint — that's the
-            // exact region we filled above. Without this, srcBox defaults
-            // to the full footprint dimensions and the driver pulls
-            // garbage rows past our sub-rect into the destination, which
-            // is what was causing zero-data textures (the all-black
-            // screen seen with `Verdict: BLACK` in earlier autonomous
-            // iteration screenshots).
-            var srcBox = new Box(0, 0, 0, (int)width, (int)height, (int)depth);
-            cmdList.CopyTextureRegion(dstLoc, (int)x, (int)y, (int)z, srcLoc, srcBox);
+            cmdList.CopyTextureRegion(dstLoc, (int)x, (int)y, (int)z, srcLoc, null);
 
             D3D12Util.TransitionTexture(cmdList, d12Tex, originalState);
 
